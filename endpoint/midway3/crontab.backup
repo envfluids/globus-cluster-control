@@ -1,0 +1,4 @@
+# Globus Compute endpoint keepalive. Install on midway3-login3 with: crontab crontab.backup
+# (replaces the whole crontab -- merge by hand if the node has other entries).
+MAILTO=awikner@uchicago.edu
+*/2 * * * * /home/awikner/gc-endpoint/keepalive.sh backup

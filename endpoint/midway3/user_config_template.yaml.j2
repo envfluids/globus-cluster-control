@@ -1,0 +1,10 @@
+{#- Pilot (2026-10-01): login-node command broker for job control from the Mac.
+    Tasks run as threads in the user endpoint process on the login node, in the
+    venv the endpoint itself was installed in. No task-time package installs,
+    no user-supplied worker_init. Original default: *.j2.default -#}
+idle_heartbeats_soft: 10
+idle_heartbeats_hard: 5760
+
+engine:
+  type: ThreadPoolEngine
+  max_workers: 4

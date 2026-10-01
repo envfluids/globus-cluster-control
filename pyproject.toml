@@ -1,0 +1,20 @@
+[project]
+name = "globus-cluster-control"
+version = "0.1.0"
+description = "Run commands and submit jobs on HPC clusters through Globus Compute instead of SSH"
+requires-python = ">=3.12,<3.13"
+# The SDK must match the endpoint's globus-compute-endpoint version on each cluster.
+dependencies = ["globus-compute-sdk==4.17.1"]
+
+[project.scripts]
+gc = "globus_cluster_control.cli:main"
+
+[dependency-groups]
+dev = ["pytest"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+pythonpath = ["tests"]
