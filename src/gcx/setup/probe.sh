@@ -4,7 +4,7 @@
 # GCX_ROOT and GCX_EP are prepended by the caller.
 
 kv() { printf '%s=%s\n' "$1" "$2"; }
-first() { command -v "$@" 2>/dev/null | head -1; }
+first() { local p; p=$(command -v "$1" 2>/dev/null) && [ -n "$p" ] && echo "$p"; }
 
 kv host "$(hostname -s 2>/dev/null)"
 kv fqdn "$(hostname -f 2>/dev/null)"
@@ -33,7 +33,7 @@ fi
 
 # Python / uv
 kv python3 "$(python3 -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])' 2>/dev/null)"
-kv uv "$(first uv || ls "$HOME/.local/bin/uv" 2>/dev/null)"
+kv uv "$(first uv || { [ -x "$HOME/.local/bin/uv" ] && echo "$HOME/.local/bin/uv"; })"
 kv curl "$(first curl)"
 
 # Outbound reachability of Globus Compute (AMQPS on 5671, or 443 fallback)

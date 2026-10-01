@@ -12,6 +12,7 @@ before the endpoint first starts, so it is never briefly unrestricted.
 import json
 import secrets
 import shlex
+import sys
 import time
 from dataclasses import dataclass, field
 from importlib import resources
@@ -109,7 +110,9 @@ def s_venv(c):
     venv = shlex.quote(c.remote.abs(c.root) + "/venv")
     env = " ".join(f"export {k}={shlex.quote(str(v))};" for k, v in c.prof["uv_env"].items())
     cmd = (f'set -e; export PATH="$HOME/.local/bin:$PATH"; {env} '
-           "command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh; "
+           # UV_NO_MODIFY_PATH: never edit the user's shell startup files.
+           "command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | "
+           "env UV_NO_MODIFY_PATH=1 sh; "
            f"uv venv -q --allow-existing --python 3.12 {venv}; "
            f"VIRTUAL_ENV={venv} uv pip install -q globus-compute-endpoint=={want}")
     return Result(CHANGE, f"install globus-compute-endpoint {want} in {c.root}/venv "
@@ -409,6 +412,11 @@ def run(cluster, dry_run=False, assume_yes=False, test_job=None):
         if res.status == OK:
             continue
         pending += 1
+        if res.status == HUMAN and not dry_run and not assume_yes and not sys.stdin.isatty():
+            # Prompts and pasted codes need a person at a terminal.
+            print(f"\n{cluster}: the next step needs you at a terminal. "
+                  f"Run `gcx setup {cluster}` yourself to continue from here.")
+            return 3
         if dry_run:
             if name in ("ssh", "probe", "venv", "tokens", "configure", "policy", "running"):
                 print(f"\n{cluster}: later steps depend on `{name}`; stopping the dry run here.")

@@ -34,8 +34,42 @@ class Prompter:
         return default if not got else got.startswith("y")
 
     def choose_list(self, question, default):
-        got = self.ask(question + " (comma-separated)", ", ".join(default))
-        return [x.strip() for x in got.split(",") if x.strip()]
+        """Typed values REPLACE the default (accounts, queues: "restrict to these")."""
+        while True:
+            got = self.ask(question + " (comma-separated)", ", ".join(default))
+            items = _split(got)
+            if self._accept(items):
+                return items
+
+    def extend_list(self, question, default):
+        """Typed paths are ADDED to the defaults; "-path" removes a default.
+
+        Replacing on input lost the defaults when someone typed one extra path
+        (DSI, 2026-10-01), so directories are always additive.
+        """
+        print(f"  {question}: {', '.join(default) or '(none)'}")
+        while True:
+            got = self.ask("Add directories (comma-separated; -PATH removes one, "
+                           "e.g. -~; Enter keeps these)", "")
+            items = list(default)
+            for x in _split(got):
+                if x.startswith("-"):
+                    if x[1:] not in items:
+                        print(f"  ({x[1:]} is not in the list; nothing to remove)")
+                    items = [i for i in items if i != x[1:]]
+                elif x not in items:
+                    items.append(x)
+            if self._accept(items):
+                return items
+
+    def _accept(self, items):
+        if self.yes:
+            return True
+        return self.confirm(f"-> {', '.join(items) or '(none)'}. Use this?", True)
+
+
+def _split(text):
+    return [x.strip() for x in text.split(",") if x.strip()]
 
 
 ALWAYS_SET = ("$USER", "$HOME")  # present in the endpoint worker's environment
@@ -82,11 +116,11 @@ def build_policy(cluster, prof, facts, root, ask):
     policy = {"scheduler": prof["scheduler"], "capabilities": caps}
     test_dir = root + "/test"  # setup's own test job lives here
     if "read" in caps:
-        roots = resolve_roots(ask.choose_list("Directories gcx may read under",
+        roots = resolve_roots(ask.extend_list("Directories gcx may read under",
                                               prof["read_roots"]), facts)
         policy["read_roots"] = roots + ([test_dir] if not _covers(roots, test_dir) else [])
     if "submit" in caps:
-        roots = resolve_roots(ask.choose_list("Directories gcx may submit scripts from",
+        roots = resolve_roots(ask.extend_list("Directories gcx may submit scripts from",
                                               prof["script_roots"]), facts)
         policy["script_roots"] = roots + ([test_dir] if not _covers(roots, test_dir) else [])
         accounts = _csv(facts, "accounts")

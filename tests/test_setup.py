@@ -137,3 +137,48 @@ def test_login_shell_variables_resolved_into_paths(capsys):
     assert roots == ["~", "/work2/09979/alice/stampede3", "/work2/09979/alice/stampede3/runs",
                      "/scratch/$USER"]
     assert "dropping $SCRATCH" in capsys.readouterr().out
+
+
+def typed(monkeypatch, *answers):
+    """Feed answers to input(), in order; fail if the menu asks for more."""
+    it = iter(answers)
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(it))
+
+
+def test_typed_directory_is_added_to_defaults_not_replacing_them(monkeypatch):
+    # The DSI case: typing one extra path used to drop ~ and scratch.
+    typed(monkeypatch, "/net/monsoon", "")  # add, then Enter at "Use this?"
+    got = menu.Prompter().extend_list("Directories gcx may read under", ["~", "/net/scratch/$USER"])
+    assert got == ["~", "/net/scratch/$USER", "/net/monsoon"]
+
+
+def test_minus_removes_a_default_and_duplicates_are_ignored(monkeypatch):
+    typed(monkeypatch, "-~, /net/monsoon, /net/scratch/$USER", "y")
+    got = menu.Prompter().extend_list("Dirs", ["~", "/net/scratch/$USER"])
+    assert got == ["/net/scratch/$USER", "/net/monsoon"]
+
+
+def test_enter_keeps_defaults(monkeypatch):
+    typed(monkeypatch, "", "")
+    assert menu.Prompter().extend_list("Dirs", ["~"]) == ["~"]
+
+
+def test_rejecting_the_final_list_asks_again(monkeypatch):
+    typed(monkeypatch, "/wrong", "n", "/right", "y")
+    assert menu.Prompter().extend_list("Dirs", ["~"]) == ["~", "/right"]
+
+
+def test_accounts_still_replace_but_are_confirmed(monkeypatch):
+    typed(monkeypatch, "pi-b", "n", "pi-a, pi-b", "")
+    assert menu.Prompter().choose_list("Accounts", ["pi-a", "pi-b", "pi-c"]) == ["pi-a", "pi-b"]
+
+
+def test_full_menu_with_typed_answers(monkeypatch):
+    # submit? read? shell? | read dirs: add, confirm | script dirs: Enter, confirm
+    # | accounts: Enter, confirm | queues: Enter, confirm | qos: Enter, confirm
+    typed(monkeypatch, "y", "y", "n", "/net/monsoon", "", "", "", "", "", "", "", "", "")
+    c = ctx()
+    pol = menu.build_policy("midway3", c.prof, c.facts, c.root, menu.Prompter())
+    assert pol["read_roots"] == ["~", "/scratch/midway3/$USER", "/net/monsoon"]
+    assert pol["script_roots"] == ["~", "/scratch/midway3/$USER"]
+    assert pol["capabilities"] == ["status", "submit", "read"]
