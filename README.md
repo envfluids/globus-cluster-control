@@ -16,28 +16,40 @@ Status: **pilot, Midway3 only** (2026-10-01). Design, failover and test record:
 ## Use
 
 ```bash
-uv tool install -e .                      # once, from the repo; puts gcx on PATH
-gcx midway3 'squeue -u $USER'             # run, wait, print; exits with the command's rc
-gcx midway3 --submit 'sbatch job.sbatch'  # print a task id and return
-gcx --result <task-id>                    # collect it later
-gcx --status midway3                      # which login node holds the endpoint
+uv tool install -e .                         # once, from the repo; puts gcx on PATH
+gcx midway3 jobs                             # your queued/running jobs
+gcx midway3 history --since 2026-10-01       # finished jobs
+gcx midway3 submit ~/runs/job.sbatch -A pi-dfreedman -p caslake -t 00:30:00
+gcx midway3 cancel 59848685
+gcx midway3 tail ~/runs/slurm-59848684.out -n 50
+gcx midway3 ls '$SCRATCH'                    # also: head, du
+gcx midway3 sh 'any shell command'           # only if shell is enabled for the cluster
+gcx status midway3                           # which login node holds the endpoint
 ```
 
-- Commands run as you, in your home directory, on a Midway3 login node, under
-  bash, with a 600 s default walltime (`--walltime`). About 2–7 s per call.
-- Output is capped at a few MB per result. For large files, use Globus Transfer.
-- **Exit code 75** means the connection dropped after the request may have
-  reached Globus. The command may or may not be running. Check (for example
-  with `squeue`) before resubmitting. `gcx` never resubmits on its own in that
-  case, so a retried `sbatch` cannot run twice.
-- `--status` reads the keepalive state through Globus *Transfer*, so it still
+`gcx --help` lists everything. Add `--json` for machine-readable output, or
+`--no-wait` to get a task id and collect it later with `gcx result <id>`.
+
+- **What a cluster allows is fixed when its functions are registered.** Each
+  command is a small Python function with the cluster's policy baked into its
+  code: which directories can be read, which scripts can be submitted, which
+  accounts, queues and QoS. Requests outside the policy are refused (exit 2)
+  on the cluster. See [docs/design.md](docs/design.md#restricted-commands).
+- Paths are relative to your cluster home unless absolute; `~` and `$VARS`
+  expand on the cluster.
+- Results are capped at 1 MB. For large files, use Globus Transfer.
+- **Exit code 75** (`submit`, `cancel`, `sh` only) means the connection dropped
+  after the request may have reached Globus, so it may or may not have run.
+  Check with `jobs` before retrying. `gcx` never resubmits on its own in that
+  case.
+- `status` reads the keepalive state through Globus *Transfer*, so it still
   works when the compute endpoint is down. It exits 1 if no node holds a fresh
   lease.
 
-Configuration lives in `~/.config/gcx/clusters/<cluster>.json`
-(format: [endpoints.example.json](endpoints.example.json); the pilot's
-`~/.config/gc-endpoints.json` is still read as a fallback). The old `gc`
-command still works but is deprecated.
+Configuration lives in `~/.config/gcx/clusters/<cluster>.json`: endpoint ID,
+policy, and the registered function IDs (`gcx register <cluster>` after
+changing the policy). The pilot's `~/.config/gc-endpoints.json` and the
+`gcx <cluster> '<cmd>'` form still work; the old `gc` command is deprecated.
 
 ## Authentication
 
@@ -52,9 +64,10 @@ Tokens are long-lived refresh tokens. There is no daily re-login.
 
 | Path | What |
 |---|---|
-| `src/gcx/` | the `gcx` command (`cli.py`), network-safety logic (`transport.py`), personal config (`config.py`) |
+| `src/gcx/` | the `gcx` command (`cli.py`), network-safety logic (`transport.py`), personal config (`config.py`), function registration (`registry.py`) |
+| `src/gcx/capabilities/` | `runtime.py`, the code that runs on the cluster; `build.py`, which bakes a policy into it |
 | `endpoint/midway3/` | endpoint config, keepalive script, crontabs, `deploy.sh` |
-| `tests/` | unit tests (`uv run pytest`), live outage test (`tests/outage_test.sh`) |
+| `tests/` | unit tests incl. a fake scheduler (`uv run pytest`), live outage test (`tests/outage_test.sh`) |
 | `docs/design.md` | architecture, failover design, measured results, open items |
 
 ## Changing the Midway3 endpoint

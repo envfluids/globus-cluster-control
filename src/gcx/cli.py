@@ -1,13 +1,26 @@
-"""Run a shell command on a cluster login node via Globus Compute.
+"""gcx: run job-control commands on cluster login nodes via Globus Compute.
 
-    gcx <cluster> '<shell command>'          # submit, wait, print, exit with rc
-    gcx <cluster> --submit '<shell command>' # print task id and return
-    gcx --result <task_id>                   # fetch a previously submitted task
-    gcx --status <cluster>                   # keepalive state, via Globus Transfer
+    gcx <cluster> jobs [ID ...]                    your queued/running jobs
+    gcx <cluster> history [ID ...] [--since DATE]  finished jobs (sacct / qstat -x)
+    gcx <cluster> queues                           partitions / queues
+    gcx <cluster> submit SCRIPT [-A ACCT] [-p QUEUE] [-q QOS] [-t TIME] [--after ID ...] [-J NAME]
+    gcx <cluster> cancel ID [ID ...]
+    gcx <cluster> ls [PATH]          gcx <cluster> du [PATH] [-d N]
+    gcx <cluster> tail PATH [-n N]   gcx <cluster> head PATH [-n N]
+    gcx <cluster> sh 'CMD'           arbitrary shell, only if enabled for the cluster
+    gcx <cluster> ping               endpoint host, Python and policy hash
 
-A network drop costs a retry, not a re-login. Submission is at-most-once: if
-the connection drops after the request may have been sent, gcx exits 75 rather
-than risk running the command twice; check (e.g. squeue) before resubmitting.
+    gcx status <cluster>             which login node holds the endpoint (via Globus Transfer)
+    gcx result <task-id>             collect a task started with --no-wait
+    gcx register <cluster>           register the cluster's functions from its policy
+
+Paths are relative to your cluster home unless absolute; ~ and $VARS expand on
+the cluster (an unquoted ~ that your laptop shell expanded is mapped back). Add --json for machine-readable output, --no-wait to print the
+task id and return.
+
+A network drop costs a retry, not a re-login. submit, cancel and sh are sent
+at-most-once: if the connection drops after the request may have been sent,
+gcx exits 75 rather than risk running it twice; check `jobs` before retrying.
 """
 
 import argparse
@@ -16,10 +29,13 @@ import subprocess
 import sys
 import warnings
 from datetime import datetime, timezone
+from pathlib import Path
 
 from globus_compute_sdk import Client, ShellFunction
+from globus_compute_sdk.serialize import JSONData
 
-from gcx import config
+from gcx import config, registry
+from gcx.capabilities.build import MUTATING
 from gcx.transport import EXIT_AMBIGUOUS, AmbiguousSubmission, retry, run_at_most_once, wait
 
 STALE_S = 360  # matches STALE in keepalive.sh
@@ -31,21 +47,153 @@ warnings.filterwarnings("ignore", message=r"\s*Environment differences detected"
 SANDBOX_NOTICE = "WARNING: Task sandboxing will not work"
 
 
-def submit(client, endpoint_id, cmd, walltime):
-    fn = ShellFunction("{cmd}", walltime=walltime)
-    fid = retry(client.register_function, fn)  # a duplicate registration is harmless
-    return run_at_most_once(client, endpoint_id, fid, cmd=cmd)
+def _verbs():
+    """verb -> (function name, argparse builder, kwargs from parsed args)."""
+    def ids(p):
+        p.add_argument("ids", nargs="*")
+
+    def submit(p):
+        p.add_argument("script")
+        p.add_argument("-A", "--account")
+        p.add_argument("-p", "--queue", "--partition", dest="queue")
+        p.add_argument("-q", "--qos")
+        p.add_argument("-t", "--walltime")
+        p.add_argument("--after", nargs="+", metavar="ID", help="start after these jobs succeed")
+        p.add_argument("-J", "--job-name")
+
+    def lines(p):
+        p.add_argument("path")
+        p.add_argument("-n", "--lines", type=int, default=200)
+
+    def path(p):
+        p.add_argument("path", nargs="?", default="~")
+
+    def du(p):
+        path(p)
+        p.add_argument("-d", "--depth", type=int, default=1)
+
+    def history(p):
+        ids(p)
+        p.add_argument("--since", help="YYYY-MM-DD[THH:MM[:SS]]")
+
+    def sh(p):
+        p.add_argument("cmd")
+        p.add_argument("--walltime", type=float, default=600)
+
+    return {
+        "ping": ("gcx_ping", None, lambda a: {}),
+        "jobs": ("gcx_jobs", ids, lambda a: {"job_ids": a.ids or None}),
+        "history": ("gcx_history", history, lambda a: {"job_ids": a.ids or None, "since": a.since}),
+        "queues": ("gcx_queues", None, lambda a: {}),
+        "submit": ("gcx_submit", submit, lambda a: {
+            "script": a.script, "account": a.account, "queue": a.queue, "qos": a.qos,
+            "walltime": a.walltime, "depends_on": a.after, "job_name": a.job_name}),
+        "cancel": ("gcx_cancel", lambda p: p.add_argument("ids", nargs="+"),
+                   lambda a: {"job_ids": a.ids}),
+        "ls": ("gcx_ls", path, lambda a: {"path": a.path}),
+        "du": ("gcx_du", du, lambda a: {"path": a.path, "depth": a.depth}),
+        "tail": ("gcx_read", lines, lambda a: {"path": a.path, "mode": "tail", "lines": a.lines}),
+        "head": ("gcx_read", lines, lambda a: {"path": a.path, "mode": "head", "lines": a.lines}),
+        "sh": ("gcx_shell", sh, lambda a: {"cmd": a.cmd, "walltime": a.walltime}),
+    }
 
 
-def report(task):
+VERBS = _verbs()
+
+
+PATH_ARGS = ("path", "script")
+
+
+def _cluster_path(path):
+    """Undo the laptop shell's expansion of an unquoted ~ (`gcx c ls ~/x`)."""
+    home = str(Path.home())
+    if path == home or path.startswith(home + "/"):
+        return "~" + path[len(home):]
+    return path
+
+
+def _client():
+    # JSON for arguments, so the endpoint never unpickles anything we send.
+    return retry(Client, data_serialization_strategy=JSONData())
+
+
+def _human(n):
+    for unit in ("B", "K", "M", "G", "T"):
+        if n < 1024 or unit == "T":
+            return f"{n:.0f}{unit}" if unit == "B" else f"{n:.1f}{unit}"
+        n /= 1024
+
+
+def render(verb, res, as_json):
+    """Print a task result; return the exit code."""
+    if not isinstance(res, dict):  # pilot ShellFunction result
+        sys.stdout.write(res.stdout)
+        sys.stderr.writelines(l for l in res.stderr.splitlines(keepends=True)
+                              if not l.startswith(SANDBOX_NOTICE))
+        return res.returncode
+    if as_json:
+        print(json.dumps(res, indent=1))
+        return res.get("rc", 0)
+    if verb == "ping":
+        print(json.dumps(res, indent=1))
+        return 0
+    if "entries" in res:
+        for e in res["entries"]:
+            mark = {"dir": "/", "link": "@"}.get(e["type"], "")
+            when = datetime.fromtimestamp(e["mtime"]).strftime("%Y-%m-%d %H:%M")
+            print(f"{_human(e['size']):>7}  {when}  {e['name']}{mark}")
+        if res.get("truncated"):
+            print("[gcx] listing truncated", file=sys.stderr)
+        return 0
+    if verb == "submit" and res.get("job_id"):
+        print(res["job_id"])
+        sys.stderr.write(res.get("stderr", ""))
+        return 0
+    sys.stdout.write(res.get("stdout", ""))
+    sys.stderr.write(res.get("stderr", ""))
+    if res.get("truncated"):
+        print("[gcx] output truncated", file=sys.stderr)
+    return res.get("rc", 0)
+
+
+def call(cluster, verb, kwargs, as_json=False, no_wait=False):
+    cfg = config.load(cluster)
+    fname = VERBS[verb][0]
+    funcs = cfg.get("functions") or {}
+    client = _client()
+    if fname in funcs:
+        fid = funcs[fname]["uuid"]
+    elif verb == "sh" and not funcs:
+        # Pilot path: no functions registered yet, so use a plain ShellFunction.
+        fid = retry(client.register_function, ShellFunction("{cmd}", walltime=kwargs["walltime"]))
+        kwargs = {"cmd": kwargs["cmd"]}
+    else:
+        enabled = sorted(v for v, (f, *_) in VERBS.items() if f in funcs)
+        sys.exit(f"[gcx] `{verb}` is not enabled on {cluster}"
+                 + (f" (enabled: {', '.join(enabled)})" if enabled else
+                    f"; run `gcx register {cluster}`"))
+    try:
+        if fname in MUTATING:
+            task_id = run_at_most_once(client, cfg["endpoint"], fid, **kwargs)
+        else:  # read-only: a duplicate run is harmless
+            task_id = retry(client.run, endpoint_id=cfg["endpoint"], function_id=fid, **kwargs)
+    except AmbiguousSubmission as e:
+        print(f"[gcx] connection lost after the request may have been sent ({e}).\n"
+              f"[gcx] `{verb}` may or may not have run on {cluster}; check "
+              f"(`gcx {cluster} jobs`) before retrying.", file=sys.stderr)
+        return EXIT_AMBIGUOUS
+    if no_wait:
+        print(task_id)
+        return 0
+    return collect(client, task_id, verb, as_json)
+
+
+def collect(client, task_id, verb=None, as_json=False):
+    task = wait(client, task_id)
     if "exception" in task:
         print(task["exception"], file=sys.stderr)
         return 1
-    res = task["result"]
-    sys.stdout.write(res.stdout)
-    sys.stderr.writelines(l for l in res.stderr.splitlines(keepends=True)
-                          if not l.startswith(SANDBOX_NOTICE))
-    return res.returncode
+    return render(verb, task["result"], as_json)
 
 
 def status(cluster):
@@ -74,40 +222,54 @@ def status(cluster):
     return 0 if ok else 1
 
 
-def main(prog="gcx"):
-    p = argparse.ArgumentParser(prog=prog, description=__doc__.split("\n\n")[0])
-    p.add_argument("cluster", nargs="?")
-    p.add_argument("cmd", nargs="?")
-    p.add_argument("--submit", action="store_true", help="return task id without waiting")
-    p.add_argument("--result", metavar="TASK_ID")
-    p.add_argument("--status", metavar="CLUSTER", help="keepalive state via Globus Transfer")
-    p.add_argument("--walltime", type=float, default=600, help="seconds before the command is killed")
-    a = p.parse_args()
+def _global(argv, prog):
+    p = argparse.ArgumentParser(prog=f"{prog} {argv[0]}")
+    p.add_argument("target")
+    p.add_argument("--force", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--json", action="store_true")
+    a = p.parse_args(argv[1:])
+    if argv[0] == "status":
+        return status(a.target)
+    if argv[0] == "result":
+        return collect(_client(), a.target, as_json=a.json)
+    funcs, changed = registry.register(_client(), a.target, force=a.force)
+    print(("registered" if changed else "unchanged") + f": {', '.join(sorted(funcs))}")
+    return 0
 
+
+def main(argv=None, prog="gcx"):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # Pilot spellings: --status C, --result T.
+    if argv[:1] in (["--status"], ["--result"]):
+        argv[0] = argv[0][2:]
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__)
+        sys.exit(0)
     try:
-        if a.status:
-            sys.exit(status(a.status))
-        if not a.result and not (a.cluster and a.cmd):
-            p.error("need <cluster> and <cmd>, or --result / --status")
-        endpoint_id = None if a.result else config.load(a.cluster)["endpoint"]
+        if argv[0] in ("status", "result", "register"):
+            sys.exit(_global(argv, prog))
+        cluster, rest = argv[0], argv[1:]
+        if not rest:
+            sys.exit(f"[gcx] what should run on {cluster}? See `{prog} --help`.")
+        if rest[0] not in VERBS:
+            # Pilot form: gcx <cluster> '<shell command>'.
+            print(f"[gcx] treating this as `{prog} {cluster} sh '...'`; say `sh` explicitly",
+                  file=sys.stderr)
+            rest = ["sh"] + rest
+        verb = rest[0]
+        p = argparse.ArgumentParser(prog=f"{prog} {cluster} {verb}")
+        if VERBS[verb][1]:
+            VERBS[verb][1](p)
+        p.add_argument("--json", action="store_true", help="print the raw result")
+        p.add_argument("--no-wait", action="store_true", help="print the task id and return")
+        a = p.parse_args(rest[1:])
+        kwargs = VERBS[verb][2](a)
+        for k in PATH_ARGS:
+            if isinstance(kwargs.get(k), str):
+                kwargs[k] = _cluster_path(kwargs[k])
+        sys.exit(call(cluster, verb, kwargs, as_json=a.json, no_wait=a.no_wait))
     except config.NotConfigured as e:
         sys.exit(f"[gcx] {e}. Configured: {', '.join(config.configured()) or 'none'}")
-
-    client = retry(Client)  # the constructor makes a (read-only) version-check request
-    if a.result:
-        sys.exit(report(wait(client, a.result)))
-    try:
-        task_id = submit(client, endpoint_id, a.cmd, a.walltime)
-    except AmbiguousSubmission as e:
-        print(f"[gcx] connection lost after the request may have been sent ({e}).\n"
-              f"[gcx] The command may or may not be running on {a.cluster}; check "
-              f"(e.g. squeue) before resubmitting.", file=sys.stderr)
-        sys.exit(EXIT_AMBIGUOUS)
-    if a.submit:
-        print(task_id)
-        return
-    print(f"[gcx] task {task_id}", file=sys.stderr)
-    sys.exit(report(wait(client, task_id)))
 
 
 def legacy_main():

@@ -1,0 +1,4 @@
+#!/bin/sh
+# Fake sacct: log argv (one arg per line, then a separator) and cwd, print canned output.
+{ echo "cwd=$(pwd)"; for a in "$0" "$@"; do echo "$a"; done; echo "--"; } >> "${FAKE_LOG:?}"
+echo "JobID JobName State"

@@ -1,4 +1,4 @@
-"""`submit` must retry a provably-unsent request and must not retry one that
+"""`run_at_most_once` must retry a provably-unsent request and must not retry one that
 may have been delivered. Uses a stand-in Client whose `run` raises real,
 socket-produced Globus errors (see test_never_sent.py), so no network or
 Globus account is involved.
@@ -11,7 +11,7 @@ import pytest
 import requests
 from globus_sdk.exc import convert_request_exception
 
-from gcx import cli, transport
+from gcx import transport
 from test_never_sent import _failure, _free_port, _read_then, _server
 
 
@@ -61,7 +61,7 @@ def reset_after_request():
 
 def test_unsent_failures_are_retried_until_success():
     c = FakeClient([refused(), refused()])
-    assert cli.submit(c, "ep", "sbatch x", 60) == "task-id"
+    assert transport.run_at_most_once(c, "ep", "fid", cmd="sbatch x") == "task-id"
     assert c.run_calls == 3
     assert c.max_retries_during_run == [0, 0, 0]  # SDK's own retries were off
 
@@ -69,18 +69,18 @@ def test_unsent_failures_are_retried_until_success():
 def test_possibly_delivered_failure_is_not_retried():
     c = FakeClient([reset_after_request()])
     with pytest.raises(transport.AmbiguousSubmission):
-        cli.submit(c, "ep", "sbatch x", 60)
+        transport.run_at_most_once(c, "ep", "fid", cmd="sbatch x")
     assert c.run_calls == 1
 
 
 def test_unsent_then_ambiguous_stops_at_the_ambiguous_one():
     c = FakeClient([refused(), reset_after_request(), refused()])
     with pytest.raises(transport.AmbiguousSubmission):
-        cli.submit(c, "ep", "sbatch x", 60)
+        transport.run_at_most_once(c, "ep", "fid", cmd="sbatch x")
     assert c.run_calls == 2
 
 
 def test_sdk_retries_restored_after_submit():
     c = FakeClient([])
-    cli.submit(c, "ep", "hostname", 60)
+    transport.run_at_most_once(c, "ep", "fid", cmd="hostname")
     assert c._cfg.max_retries == 5

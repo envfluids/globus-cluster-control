@@ -27,7 +27,7 @@ outage() {  # outage <start-after-s> <duration-s>
 
 echo "== A: 90s outage while a 30s remote command runs"
 outage 8 90; toggler=$!
-out=$("$gc" "$cluster" 'sleep 30; echo "A-ok on $(hostname -s)"' 2> >(sed 's/^/  /' >&2))
+out=$("$gc" "$cluster" sh 'sleep 30; echo "A-ok on $(hostname -s)"' 2> >(sed 's/^/  /' >&2))
 wait $toggler
 echo "  stdout: $out"
 [[ $out == A-ok* ]] || { echo "A FAILED"; fail=1; }
@@ -36,7 +36,7 @@ echo "== B: network already down at submit, up after 40s"
 token=$(date +%s)$$
 touch "$flag"; echo "$(date +%T) >>> network down"
 ( sleep 40; rm -f "$flag"; echo "$(date +%T) >>> network up" ) & toggler=$!
-out=$("$gc" "$cluster" "mkdir -p ~/gc-endpoint/test; echo x >> ~/gc-endpoint/test/once.$token; wc -l < ~/gc-endpoint/test/once.$token; rm ~/gc-endpoint/test/once.$token" 2> >(sed 's/^/  /' >&2))
+out=$("$gc" "$cluster" sh "mkdir -p ~/gc-endpoint/test; echo x >> ~/gc-endpoint/test/once.$token; wc -l < ~/gc-endpoint/test/once.$token; rm ~/gc-endpoint/test/once.$token" 2> >(sed 's/^/  /' >&2))
 wait $toggler
 echo "  times the command ran: $out"
 [[ $out == 1 ]] || { echo "B FAILED"; fail=1; }

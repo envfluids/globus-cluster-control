@@ -28,6 +28,53 @@ Mac  --HTTPS-->  Globus Compute service  <--AMQPS (outbound)--  endpoint on midw
 - **Network**: the Midway3 login node reaches `compute.api.globus.org:443` and
   `compute.amqps.globus.org` on 443 and 5671.
 
+## Restricted commands
+
+Each `gcx` verb calls one registered function. All of them come from
+`src/gcx/capabilities/runtime.py`, with the cluster's policy written into the
+`POLICY = {}` line at registration (`build.py`). The text is registered from
+source (`register_source_code`), and arguments travel as JSON, so the endpoint
+never unpickles anything and its Python version need not match the laptop's.
+The code is exec'd under 3.9 and 3.13 in `tests/test_source_compat.py`.
+
+| Capability | Functions | Policy keys |
+|---|---|---|
+| status (always on) | `gcx_ping`, `gcx_jobs`, `gcx_history`, `gcx_queues` | `scheduler` |
+| submit | `gcx_submit`, `gcx_cancel` | `script_roots`, `accounts`, `queues`, `qos`, `submit_extra` |
+| read | `gcx_ls`, `gcx_read` (tail/head), `gcx_du` | `read_roots` |
+| shell (opt-in) | `gcx_shell` | none; cancels every other restriction |
+
+How each request is restricted:
+
+- **No shell** except `gcx_shell`. Programs run with argv lists, so arguments
+  cannot inject commands.
+- **Paths** are resolved with `realpath`, so `..` and symlinks are followed
+  before the root check (`os.path.commonpath`).
+- **Submit** takes a script that already exists under `script_roots`. It runs
+  with its own directory as the working directory. The only flags are
+  account, queue, QoS, walltime, dependency and job name, each validated;
+  `--wrap`, `-o` and `--export` are unreachable.
+- **Cancel** uses `scancel -u $USER`, so only your own jobs can be cancelled.
+- **Output** is capped at 1 MB.
+
+**Registered code cannot be changed**, so a policy can only be widened by
+registering new functions. Phase 3 makes the endpoint accept only these
+function IDs (`allowed_functions`). Until then, a raw `ShellFunction` still
+runs, and the restrictions above only govern what goes through `gcx`.
+
+Live check on Midway3 (2026-10-01), each request refused on the cluster:
+- reading `/etc/passwd`;
+- a symlink to `/etc` placed in home;
+- a `~/../../` escape;
+- account `ai4s-hackathon` and queue `bigmem`, which aren't in the policy;
+- an injected walltime (`1:00 --wrap=id`);
+- submitting a script that is readable but outside `script_roots`;
+- a job ID with flags appended (`1 -u root`).
+
+A real dependent pair on `caslake`/`pi-dfreedman` (59848684 → 59848685) was
+submitted, followed, cancelled and read back. The outage test passes through
+`gcx_shell`.
+
 ## Login-node failover
 
 Midway3 has six login nodes, each with its own public name
