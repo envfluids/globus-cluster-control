@@ -1,0 +1,27 @@
+# ALCF Polaris. UNVERIFIED: not yet set up with gcx (Phase 6).
+
+name = "polaris"
+description = "ALCF Polaris"
+ssh_host = "polaris.alcf.anl.gov"
+# ALCF MFA is a single-use token: a master that expires costs another one,
+# so it persists until closed, and gcx login asks before tearing it down.
+ssh_persist = "yes"
+mfa_single_use = true
+scheduler = "pbs"
+login_nodes = []
+
+# The Polaris collection is rooted at /eagle, not home, so `gcx status` is
+# unavailable here (gcx doctor still works).
+transfer_collection = ""
+
+# ALCF allows user endpoints on login nodes "with caution": keep it small.
+max_workers = 2
+submit_extra = ["-l", "filesystems=home:eagle"]   # every Polaris job needs it
+
+read_roots = ["~"]
+script_roots = ["~"]
+notes = "No CPU-only queue: the test job takes a whole GPU node in `debug` (1 h max, 1 running job per user)."
+
+[test_job]
+queue = "debug"
+resources = ["-l select=1", "-l walltime=00:05:00"]

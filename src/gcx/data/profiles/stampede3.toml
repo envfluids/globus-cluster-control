@@ -1,0 +1,25 @@
+# TACC Stampede3. UNVERIFIED: not yet set up with gcx (Phase 6).
+
+name = "stampede3"
+description = "TACC Stampede3"
+ssh_host = "stampede3.tacc.utexas.edu"
+ssh_persist = "24h"
+scheduler = "slurm"
+login_nodes = []
+
+transfer_collection = "1e9ddd41-fe4b-406f-95ff-f3d79f9cb523"   # home mapped at /~/
+transfer_home = "/~/"
+
+read_roots = ["~", "$WORK", "$SCRATCH"]
+script_roots = ["~", "$WORK", "$SCRATCH"]
+notes = "Login nodes cap each process at 8 GB virtual memory (ulimit -v): uv must be throttled. TACC rules on long-running login processes and cron are unknown."
+
+# The 8 GB per-process cap makes parallel uv installs fail.
+[uv_env]
+UV_CONCURRENT_DOWNLOADS = "1"
+UV_CONCURRENT_INSTALLS = "1"
+UV_CONCURRENT_BUILDS = "1"
+
+[test_job]
+queue = "spr"
+resources = ["-N 1", "-n 1", "-t 00:02:00"]   # TACC requires node/task counts and a time

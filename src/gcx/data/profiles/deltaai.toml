@@ -1,0 +1,20 @@
+# NCSA DeltaAI (GH200, aarch64). UNVERIFIED: not yet set up with gcx (Phase 6).
+
+name = "deltaai"
+description = "NCSA DeltaAI"
+ssh_host = "dtai-login.delta.ncsa.illinois.edu"   # documented login.deltaai... has no DNS record
+ssh_persist = "24h"
+scheduler = "slurm"
+login_nodes = []
+
+# DeltaAI's home is separate from Delta's, and no collection is known to
+# expose it, so `gcx status` is unavailable here (gcx doctor still works).
+transfer_collection = ""
+
+read_roots = ["~"]
+script_roots = ["~"]
+notes = "aarch64 login nodes: check that uv provides Python 3.12 and the endpoint wheels install."
+
+[test_job]
+queue = "ghx4"
+resources = ["--ntasks=1", "--cpus-per-task=1", "--mem=1G", "--time=00:02:00"]

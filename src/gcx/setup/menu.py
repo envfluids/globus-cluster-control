@@ -38,6 +38,28 @@ class Prompter:
         return [x.strip() for x in got.split(",") if x.strip()]
 
 
+ALWAYS_SET = ("$USER", "$HOME")  # present in the endpoint worker's environment
+
+
+def resolve_roots(roots, facts):
+    """Replace login-shell-only variables ($WORK, ...) with the probed paths.
+
+    The endpoint's worker does not run a login shell, so only $USER and $HOME
+    are reliably set there; anything else would silently match nothing.
+    """
+    out = []
+    for r in roots:
+        head, sep, rest = r.partition("/")
+        if head.startswith("$") and head not in ALWAYS_SET:
+            value = facts.get("env_" + head[1:])
+            if not value:
+                print(f"  (dropping {r}: {head} is not set on this cluster)")
+                continue
+            r = value + sep + rest
+        out.append(r.rstrip("/") if r != "/" else r)
+    return out
+
+
 def _csv(facts, key):
     return [x for x in facts.get(key, "").split(",") if x]
 
@@ -60,10 +82,12 @@ def build_policy(cluster, prof, facts, root, ask):
     policy = {"scheduler": prof["scheduler"], "capabilities": caps}
     test_dir = root + "/test"  # setup's own test job lives here
     if "read" in caps:
-        roots = ask.choose_list("Directories gcx may read under", prof["read_roots"])
+        roots = resolve_roots(ask.choose_list("Directories gcx may read under",
+                                              prof["read_roots"]), facts)
         policy["read_roots"] = roots + ([test_dir] if not _covers(roots, test_dir) else [])
     if "submit" in caps:
-        roots = ask.choose_list("Directories gcx may submit scripts from", prof["script_roots"])
+        roots = resolve_roots(ask.choose_list("Directories gcx may submit scripts from",
+                                              prof["script_roots"]), facts)
         policy["script_roots"] = roots + ([test_dir] if not _covers(roots, test_dir) else [])
         accounts = _csv(facts, "accounts")
         if prof["scheduler"] == "slurm" and accounts:

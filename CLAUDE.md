@@ -13,8 +13,10 @@ the cluster side.
 - **Exit code 75 = submission state unknown.** Check with `squeue` (or the
   equivalent) before resubmitting. Never wrap `gcx submit` in your own retry
   loop; that would undo its at-most-once guarantee.
-- **Never run `globus-compute-endpoint login`** or the Mac-side login. They open
-  a browser; ask the human.
+- **Never run `globus-compute-endpoint login`**, the laptop's first Globus login,
+  `gcx login`, or `gcx ssh-config --apply`. They need MFA, a browser, or edit
+  the human's SSH config; ask the human. `gcx ssh-config` without `--apply`
+  is a harmless preview.
 - **The endpoint runs on exactly one Midway3 login node** (primary login4,
   backup login3; see `docs/design.md`). Do not `start` it by hand on another
   node, and do not delete files in `~/gc-endpoint/state/`. Use

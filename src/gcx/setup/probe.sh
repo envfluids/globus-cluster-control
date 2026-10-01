@@ -11,6 +11,9 @@ kv fqdn "$(hostname -f 2>/dev/null)"
 kv user "$(id -un)"
 kv home "$HOME"
 kv shell_ulimit_v "$(ulimit -v 2>/dev/null)"
+# Site variables that only the login shell sets; the endpoint's worker does not
+# start from a login shell, so setup resolves them into literal paths.
+for v in WORK SCRATCH PROJECT; do kv "env_$v" "${!v}"; done
 kv home_free_kb "$(df -Pk "$HOME" 2>/dev/null | awk 'NR==2{print $4}')"
 
 # Scheduler

@@ -85,8 +85,9 @@ def sdk_version():
 def s_ssh(c):
     if c.remote.reachable():
         return Result(OK, f"ssh {c.remote.alias}")
-    return Result(BLOCKED, f"ssh {c.remote.alias} failed: log in first "
-                           f"(`morning-login {c.remote.alias}`), then re-run setup")
+    return Result(BLOCKED, f"ssh {c.remote.alias} failed. If the alias is new: "
+                           f"`gcx ssh-config {c.cluster} --apply`. Then log in (you answer MFA): "
+                           f"`gcx login {c.cluster}`, and re-run setup")
 
 
 def s_probe(c):
@@ -240,7 +241,7 @@ def personal(c):
         "remote_state": root + "/state",
         "endpoint": c.facts.get("ep_id") or c.cfg.get("endpoint"),
         "state": f"{c.prof['transfer_collection']}:{c.prof['transfer_home']}"
-                 f"{root[2:]}/state/" if root.startswith("~/") else None,
+                 f"{root[2:]}/state/" if c.prof["transfer_collection"] else None,
     }
 
 
@@ -315,6 +316,13 @@ def _cron_cmd(c, role):
     return f"( {keep}; {add_mail}echo {shlex.quote(line)} ) | crontab -"
 
 
+def _alias_resolves(alias, fqdn):
+    import subprocess
+    p = subprocess.run(["ssh", "-G", alias], capture_output=True, text=True,
+                       stdin=subprocess.DEVNULL)
+    return p.returncode == 0 and f"\nhostname {fqdn}\n" in "\n" + p.stdout
+
+
 def s_cron(c):
     ka = c.cfg["keepalive"]
     if ka["mode"] == "none":
@@ -333,7 +341,8 @@ def s_cron(c):
         return Result(CHANGE, f"install the {role} cron entry on {node}",
                       lambda: (c.remote.run(cmd), c.remote.run(f"{c.remote.abs(c.root)}/keepalive.sh {role}")))
     fqdn = next((n for n in c.prof["login_nodes"] if profiles.short(n) == node), node)
-    host = f"{c.facts.get('user')}@{fqdn}"
+    # Prefer the per-node alias from `gcx ssh-config`: it gets its own reusable master.
+    host = node if _alias_resolves(node, fqdn) else f"{c.facts.get('user')}@{fqdn}"
 
     def act():
         print(f"\n  Installing the {role} cron entry needs a login to {fqdn} itself "

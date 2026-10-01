@@ -1,0 +1,19 @@
+# NCAR Derecho (being retired). UNVERIFIED: not yet set up with gcx (Phase 6).
+
+name = "derecho"
+description = "NCAR Derecho"
+ssh_host = "derecho.hpc.ucar.edu"
+ssh_persist = "24h"
+scheduler = "pbs"
+login_nodes = []   # derecho1..8 may be public; probe before relying on failover
+
+transfer_collection = "d33b3614-6d04-11e5-ba46-22000b92c6ec"   # home mapped at /~/
+transfer_home = "/~/"
+
+read_roots = ["~", "/glade/work/$USER", "/glade/derecho/scratch/$USER"]
+script_roots = ["~", "/glade/work/$USER"]
+notes = "PBS Pro; every job needs a project (-A). Being retired, so best effort."
+
+[test_job]
+queue = "develop"
+resources = ["-l select=1:ncpus=1", "-l walltime=00:02:00"]

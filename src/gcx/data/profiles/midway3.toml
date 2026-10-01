@@ -5,7 +5,9 @@
 name = "midway3"
 description = "UChicago RCC Midway3"
 ssh_host = "midway3.rcc.uchicago.edu"   # round-robin over login1,3,4,5,6
+ssh_persist = "24h"                     # ControlPersist: master lives 24 h
 scheduler = "slurm"
+verified = "2026-10-01"                 # last full `gcx setup` + test job here
 
 # Login nodes reachable by name from outside, for primary/backup failover.
 # login2 is outside the round-robin rotation, so it is not offered.

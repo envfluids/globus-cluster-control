@@ -1,0 +1,19 @@
+# NCSA Delta. UNVERIFIED: not yet set up with gcx (Phase 6).
+
+name = "delta"
+description = "NCSA Delta"
+ssh_host = "login.delta.ncsa.illinois.edu"   # round-robin over 4 nodes, no public per-node names
+ssh_persist = "24h"
+scheduler = "slurm"
+login_nodes = []                             # so: single-node keepalive
+
+transfer_collection = "7e936164-de58-4e3d-85da-21aa23c07169"   # home mapped at /~/
+transfer_home = "/~/"
+
+read_roots = ["~"]
+script_roots = ["~"]
+notes = "One of the round-robin nodes was seen wedged (accepts TCP, no SSH banner) on 2026-09-15; gcx login pins a healthy node."
+
+[test_job]
+queue = "cpu"
+resources = ["--ntasks=1", "--cpus-per-task=1", "--mem=1G", "--time=00:02:00"]

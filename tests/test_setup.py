@@ -129,3 +129,11 @@ def test_unsafe_root_refused():
         Remote("x").probe("~/a; rm -rf ~", "gcx")
     with pytest.raises(RemoteError):
         Remote("x").probe("/etc", "gcx")
+
+
+def test_login_shell_variables_resolved_into_paths(capsys):
+    facts = {"env_WORK": "/work2/09979/alice/stampede3", "env_SCRATCH": ""}
+    roots = menu.resolve_roots(["~", "$WORK", "$WORK/runs/", "$SCRATCH", "/scratch/$USER"], facts)
+    assert roots == ["~", "/work2/09979/alice/stampede3", "/work2/09979/alice/stampede3/runs",
+                     "/scratch/$USER"]
+    assert "dropping $SCRATCH" in capsys.readouterr().out

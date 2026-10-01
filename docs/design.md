@@ -222,6 +222,52 @@ them exactly, without touching the cluster. The test job (59852493 on
 `caslake`/`pi-dfreedman`) was submitted, followed and read back through
 `gcx`, matching a random token.
 
+## SSH bootstrap
+
+Setup needs SSH once per cluster, so the repo carries what a colleague needs
+to get there. Both pieces are taken from `physicsnemo/hpc/agent-toolkit`.
+
+**`gcx ssh-config`** (`sshconfig.py`) writes one alias per cluster:
+ControlMaster, a shared ControlPath, and ControlPersist from the profile
+(`yes` for Polaris). It also writes one alias per named login node for
+failover clusters, which setup prefers when it has to install cron on
+another node.
+
+- **Where it goes**: between `# >>> gcx >>>` fences, above any `Host *` (ssh
+  takes the first value it sees).
+- **What it leaves alone**: an alias already defined outside the fence, such
+  as hpc-agent-toolkit's.
+- **Adding a cluster** keeps the existing ones and their usernames, in their
+  order.
+- **No `ForwardAgent`**: forwarding your SSH agent to shared login nodes is a
+  risk this tool doesn't need.
+- **Checked against OpenSSH**: `ssh -G` resolves every generated alias in the
+  tests.
+
+**`gcx login`** is the bundled `morning-login` (`data/morning-login`, bash).
+It keeps the toolkit's protections:
+
+- a connect timeout and retries;
+- pinning a healthy node when a round-robin address is wedged;
+- clearing stale sockets on `--refresh`.
+
+It takes the cluster list from your configured clusters. The "ask before
+spending a token" rule now applies to any profile with
+`mfa_single_use = true`. The physicsnemo Globus preflight is dropped, because
+it depended on that repo's files. It is tested against a fake `ssh`, never
+against real connections.
+
+**Profiles for all seven clusters** carry SSH and scheduler facts from the
+toolkit and research. Only Midway3's is `verified`. Three clusters have no
+Globus Transfer collection exposing home, so `gcx status` is unavailable
+there: Polaris (`/eagle`), DSI (group storage) and DeltaAI (home not exposed).
+`gcx doctor` still works on all of them.
+
+**Login-shell variables** such as `$WORK` and `$SCRATCH` (Stampede3) are not
+set in the endpoint worker's environment. Setup therefore resolves them into
+literal paths from the probe when it builds the policy. Only `$USER` and
+`$HOME` stay symbolic.
+
 ## Submission safety
 
 `globus_sdk`'s transport retries **any** network error up to 5 times, POSTs

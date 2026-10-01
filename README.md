@@ -10,8 +10,37 @@ Globus's cloud service. The Mac talks only to that service, over stateless HTTPS
 a dropped network costs a retry, not a login, and a submitted task waits in the
 cloud until its result is collected.
 
-Status: **pilot, Midway3 only** (2026-10-01). Design, failover and test record:
+Status: **Midway3 set up and locked down; the other clusters are profiled, not yet set up** (2026-10-01). Design, failover and test record:
 [docs/design.md](docs/design.md).
+
+## Getting started
+
+From your laptop (macOS or Linux), with [uv](https://docs.astral.sh/uv/) and
+the [Globus CLI](https://docs.globus.org/cli/) installed:
+
+```bash
+git clone git@github.com:envfluids/globus-cluster-control.git
+cd globus-cluster-control && uv tool install -e .   # puts gcx on PATH
+
+gcx ssh-config midway3 --user <cluster-username>    # preview the SSH aliases
+gcx ssh-config midway3 --user <cluster-username> --apply
+gcx login midway3                                   # you answer MFA, once a day
+gcx setup midway3                                   # asks questions, installs, tests
+```
+
+Known clusters: delta, deltaai, derecho, dsi, midway3, polaris, stampede3
+(`src/gcx/data/profiles/`). Only Midway3 is verified so far; the others are
+set up for the first time in the next phase.
+
+- **`gcx ssh-config`** writes SSH aliases with a shared connection per cluster
+  into your SSH config, between `# >>> gcx >>>` markers. It also adds one
+  alias per named login node on failover clusters. It never changes an alias
+  you already have, and it puts its block above any `Host *` so that block
+  can't override the username.
+- **`gcx login`** opens those connections, so you answer MFA once a day.
+  `--refresh` rebuilds them after a network change. On a single-use-MFA
+  cluster (Polaris) it asks before closing a connection, because each login
+  costs a token.
 
 ## Use
 

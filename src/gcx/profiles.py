@@ -7,8 +7,11 @@ Shipped in src/gcx/data/profiles/<name>.toml. Personal choices live in
 import tomllib
 from importlib import resources
 
-REQUIRED = ("name", "ssh_host", "scheduler", "transfer_collection")
+REQUIRED = ("name", "ssh_host", "scheduler")
 DEFAULTS = {
+    "ssh_persist": "24h",
+    "verified": "",
+    "transfer_collection": "",   # empty: no collection exposes home, so no `gcx status`
     "login_nodes": [],
     "transfer_home": "/~/",
     "max_workers": 4,

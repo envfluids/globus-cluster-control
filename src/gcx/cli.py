@@ -16,6 +16,8 @@
     gcx allowlist <cluster> [--apply | --off]   restrict the endpoint to those functions
     gcx doctor <cluster>             check that the cluster works and is locked down
     gcx setup <cluster> [--dry-run] [--yes]   install / update everything, then test it
+    gcx ssh-config [cluster ...] [--user U] [--apply]   SSH aliases with shared connections
+    gcx login [cluster ...] [--refresh]   open those connections (you answer MFA), once a day
 
 Paths are relative to your cluster home unless absolute; ~ and $VARS expand on
 the cluster (an unquoted ~ that your laptop shell expanded is mapped back). Add --json for machine-readable output, --no-wait to print the
@@ -295,6 +297,45 @@ def _global(argv, prog):
     return 0
 
 
+def login(args):
+    """Run the bundled morning-login over your configured clusters (MFA prompts)."""
+    import os
+    from importlib import resources
+    script = str(resources.files("gcx.data").joinpath("morning-login"))
+    env = dict(os.environ,
+               GCX_CLUSTERS=" ".join(config.configured()),
+               GCX_SINGLE_USE_MFA=" ".join(n for n in profiles.available()
+                                           if profiles.load(n)["mfa_single_use"]))
+    os.execvpe("bash", ["bash", script, *args], env)
+
+
+def ssh_config(args):
+    from gcx import sshconfig
+    p = argparse.ArgumentParser(prog="gcx ssh-config",
+                                description="Write SSH aliases for clusters into your SSH config.")
+    p.add_argument("clusters", nargs="*", help="default: your configured clusters")
+    p.add_argument("--user", help="cluster username (default: saved per cluster, else local user)")
+    p.add_argument("--apply", action="store_true", help="write the file (default: show the diff)")
+    p.add_argument("--file", help=argparse.SUPPRESS)  # tests / previews
+    a = p.parse_args(args)
+    clusters = a.clusters or config.configured()
+    if not clusters:
+        sys.exit(f"[gcx] name the clusters to add; known: {', '.join(profiles.available())}")
+    pairs = []
+    for c in clusters:
+        profiles.load(c)  # unknown cluster -> clear error
+        try:
+            cfg = config.load(c)
+        except config.NotConfigured:
+            cfg = {}
+        user = a.user or cfg.get("user") or sshconfig.default_user()
+        pairs.append((c, user))
+        if a.apply and not a.file and (cfg.get("user") != user or "ssh" not in cfg):
+            cfg.update(user=user, ssh=cfg.get("ssh", c))
+            config.save(c, cfg)
+    return sshconfig.run(pairs, path=a.file, apply=a.apply)
+
+
 def main(argv=None, prog="gcx"):
     argv = list(sys.argv[1:] if argv is None else argv)
     # Pilot spellings: --status C, --result T.
@@ -303,6 +344,13 @@ def main(argv=None, prog="gcx"):
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__)
         sys.exit(0)
+    if argv[0] == "login":
+        login(argv[1:])
+    if argv[0] == "ssh-config":
+        try:
+            sys.exit(ssh_config(argv[1:]))
+        except profiles.UnknownCluster as e:
+            sys.exit(f"[gcx] {e}")
     try:
         if argv[0] in GLOBAL:
             sys.exit(_global(argv, prog))
