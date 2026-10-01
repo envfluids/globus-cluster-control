@@ -47,8 +47,10 @@ gcx status midway3                           # which login node holds the endpoi
   lease.
 
 Configuration lives in `~/.config/gcx/clusters/<cluster>.json`: endpoint ID,
-policy, and the registered function IDs (`gcx register <cluster>` after
-changing the policy). The pilot's `~/.config/gc-endpoints.json` and the
+policy and the registered function IDs. The endpoint accepts **only** those
+functions. After changing a policy, run `gcx register <cluster>`, then
+`gcx allowlist <cluster> --apply`; calls are refused until both are done.
+`gcx doctor <cluster>` checks that everything works and is locked down. The pilot's `~/.config/gc-endpoints.json` and the
 `gcx <cluster> '<cmd>'` form still work; the old `gc` command is deprecated.
 
 ## Authentication

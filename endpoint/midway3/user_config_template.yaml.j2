@@ -8,3 +8,8 @@ idle_heartbeats_hard: 5760
 engine:
   type: ThreadPoolEngine
   max_workers: 4
+  # gcx registers functions as source text and sends arguments as JSON; refuse
+  # anything else, so no task can make the endpoint unpickle (run) a payload.
+  allowed_serializers:
+    - globus_compute_sdk.serialize.PureSourceTextInspect
+    - globus_compute_sdk.serialize.JSONData

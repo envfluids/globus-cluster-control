@@ -58,9 +58,56 @@ How each request is restricted:
 - **Output** is capped at 1 MB.
 
 **Registered code cannot be changed**, so a policy can only be widened by
-registering new functions. Phase 3 makes the endpoint accept only these
-function IDs (`allowed_functions`). Until then, a raw `ShellFunction` still
-runs, and the restrictions above only govern what goes through `gcx`.
+registering new functions *and* putting their IDs on the endpoint's
+allowlist, which takes SSH access to the cluster.
+
+### Enforcement
+
+There are two layers, both in the endpoint's own config:
+
+- **`allowed_functions`** in the manager's `config.yaml`, written by
+  `gcx allowlist <cluster> --apply`. It is sent to Globus when the endpoint
+  starts. The service then rejects any other function at submit with
+  `403 FUNCTION_NOT_PERMITTED`, and the endpoint re-checks each task.
+- **`allowed_serializers`** on the engine in `user_config_template.yaml.j2`:
+  source text for code, JSON for data. Even an allowed function is refused if
+  its arguments arrive pickled (`Data serializer DillDataBase64 disabled by
+  current configuration`).
+
+Changing the policy is therefore two steps:
+
+1. `gcx register <cluster>`, which creates new IDs.
+2. `gcx allowlist <cluster> --apply`.
+
+The allowlist step writes `config.yaml` over SSH and touches
+`state/restart-request`. The keepalive on whichever node holds the endpoint
+restarts it on its next tick, keeping its claim throughout so the other node
+never starts a second copy. `gcx` then polls the service until it reports
+exactly the new set. **Rollback**: `gcx allowlist <cluster> --off`.
+
+`gcx doctor <cluster>` checks all of this:
+
+- the functions match the current policy;
+- the endpoint runs that policy (compared by policy hash);
+- the service's allowlist equals the local functions;
+- a raw `ShellFunction` is refused;
+- reading `/etc/passwd` is refused;
+- the scheduler answers.
+
+Locked down on Midway3 2026-10-01, 16:43:
+
+- **Apply**: the allowlist was reported in force 37 s after `--apply`. login4
+  restarted the endpoint on request at 16:44:22, leaving one process and no
+  errors.
+- **`doctor`**: all checks passed. A raw `ShellFunction('id')` got 403, and
+  pickled arguments to an allowed function were refused.
+- **Outage test**: PASS.
+- **Failover under enforcement**:
+  - 16:49:06: login4's cron disabled and its endpoint stopped.
+  - 16:54:22: login3 took over, and `doctor` passed there too, allowlist
+    included.
+  - 16:54:56: cron restored. 16:58:12: login3 handed back. 17:00:16: login4
+    holds the endpoint.
 
 Live check on Midway3 (2026-10-01), each request refused on the cluster:
 - reading `/etc/passwd`;
@@ -184,10 +231,9 @@ retried. The live outage test found this.
 
 ## Open items
 
-- **Security.** Anything holding the Mac's Globus Compute tokens can run
-  arbitrary commands as the user on Midway3. Before adding clusters, narrow
-  this: the endpoint's `allowed_functions` list with a fixed set of registered
-  functions, and/or a Globus authentication policy.
+- **Security.** Midway3 is locked down to its registered functions (see
+  Enforcement). Shell remains enabled there by choice; anything holding the
+  Mac's tokens can still run `gcx_shell` until it is turned off in the policy.
 - **Other clusters.** ALCF (Polaris) officially supports user endpoints on
   login nodes. Globus's docs carry example configs for Delta, Stampede3 and
   Midway; site policy on long-running login-node daemons still needs checking.

@@ -19,6 +19,10 @@ the cluster side.
   backup login3; see `docs/design.md`). Do not `start` it by hand on another
   node, and do not delete files in `~/gc-endpoint/state/`. Use
   `gcx --status midway3`.
+- **The endpoint only runs registered gcx functions.** A raw Globus Compute
+  `ShellFunction` gets 403 by design. Policy changes are
+  `gcx register <c>` + `gcx allowlist <c> --apply`, and only with the human's
+  OK. `gcx doctor <c>` is the health check.
 - **Changing endpoint files**: edit `endpoint/midway3/`, then
   `endpoint/midway3/deploy.sh` (diff), then `--apply`. Do not edit files on
   the cluster directly.

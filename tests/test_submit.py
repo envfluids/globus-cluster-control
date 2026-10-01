@@ -84,3 +84,14 @@ def test_sdk_retries_restored_after_submit():
     c = FakeClient([])
     transport.run_at_most_once(c, "ep", "fid", cmd="hostname")
     assert c._cfg.max_retries == 5
+
+
+def test_wait_returns_endpoint_failure_instead_of_raising():
+    from globus_compute_sdk.errors import TaskExecutionFailed
+
+    class C:
+        def get_task(self, task_id):
+            raise TaskExecutionFailed("Data serializer DillDataBase64 disabled")
+
+    task = transport.wait(C(), "t")
+    assert "DillDataBase64 disabled" in task["exception"] and not task["pending"]

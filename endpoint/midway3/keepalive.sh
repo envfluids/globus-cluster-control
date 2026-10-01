@@ -67,6 +67,25 @@ stop() {
 peer_fresh() { [ "$(age "$STATE/heartbeat.$peer")" -lt "$STALE" ]; }
 lease_fresh() { [ "$(age "$STATE/owner")" -lt "$STALE" ]; }
 
+# `gcx allowlist --apply` touches restart-request after pushing a new config;
+# whichever node runs the endpoint restarts it. The lease is kept (claim, not
+# stop/start) so the other node never sees a gap in which to start a second one.
+if running && [ -e "$STATE/restart-request" ]; then
+  rm -f "$STATE/restart-request"
+  claim
+  "$GCE" stop "$EP" >>"$LOG" 2>&1
+  sleep 5
+  running && pkill -u "$USER" -f "^Globus Compute Endpoint .*, $EP\)"
+  rm -f "$EPDIR/daemon.pid"
+  claim
+  if "$GCE" start --detach "$EP" >>"$LOG" 2>&1 && sleep 10 && running; then
+    claim; say "restarted endpoint (requested)"
+  else
+    say "FAILED to restart endpoint on request; see $LOG and $EPDIR/endpoint.log"
+  fi
+  exit 0
+fi
+
 if [ "$role" = primary ]; then
   if running; then
     [ "$(owner)" = "$me" ] || say "endpoint running; reclaiming lease from '$(owner)'"

@@ -13,6 +13,8 @@
     gcx status <cluster>             which login node holds the endpoint (via Globus Transfer)
     gcx result <task-id>             collect a task started with --no-wait
     gcx register <cluster>           register the cluster's functions from its policy
+    gcx allowlist <cluster> [--apply | --off]   restrict the endpoint to those functions
+    gcx doctor <cluster>             check that the cluster works and is locked down
 
 Paths are relative to your cluster home unless absolute; ~ and $VARS expand on
 the cluster (an unquoted ~ that your laptop shell expanded is mapped back). Add --json for machine-readable output, --no-wait to print the
@@ -34,7 +36,7 @@ from pathlib import Path
 from globus_compute_sdk import Client, ShellFunction
 from globus_compute_sdk.serialize import JSONData
 
-from gcx import config, registry
+from gcx import allowlist, config, doctor, registry
 from gcx.capabilities.build import MUTATING
 from gcx.transport import EXIT_AMBIGUOUS, AmbiguousSubmission, retry, run_at_most_once, wait
 
@@ -222,18 +224,35 @@ def status(cluster):
     return 0 if ok else 1
 
 
+GLOBAL = ("status", "result", "register", "allowlist", "doctor")
+
+
 def _global(argv, prog):
     p = argparse.ArgumentParser(prog=f"{prog} {argv[0]}")
     p.add_argument("target")
     p.add_argument("--force", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--json", action="store_true")
+    if argv[0] == "allowlist":
+        g = p.add_mutually_exclusive_group()
+        g.add_argument("--apply", action="store_true", help="push the config and restart the endpoint")
+        g.add_argument("--off", action="store_true", help="remove the allowlist (rollback); implies --apply")
     a = p.parse_args(argv[1:])
     if argv[0] == "status":
         return status(a.target)
     if argv[0] == "result":
         return collect(_client(), a.target, as_json=a.json)
+    if argv[0] == "doctor":
+        return doctor.main(_client(), a.target)
+    if argv[0] == "allowlist":
+        try:
+            return allowlist.run(_client(), a.target, apply=a.apply or a.off, off=a.off)
+        except allowlist.AllowlistError as e:
+            sys.exit(f"[gcx] {e}")
     funcs, changed = registry.register(_client(), a.target, force=a.force)
     print(("registered" if changed else "unchanged") + f": {', '.join(sorted(funcs))}")
+    if changed:
+        print(f"[gcx] new function ids: run `gcx allowlist {a.target} --apply` if the "
+              f"allowlist is in force, or calls will be refused", file=sys.stderr)
     return 0
 
 
@@ -246,7 +265,7 @@ def main(argv=None, prog="gcx"):
         print(__doc__)
         sys.exit(0)
     try:
-        if argv[0] in ("status", "result", "register"):
+        if argv[0] in GLOBAL:
             sys.exit(_global(argv, prog))
         cluster, rest = argv[0], argv[1:]
         if not rest:

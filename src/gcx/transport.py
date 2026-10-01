@@ -12,6 +12,7 @@ import time
 
 import requests
 import urllib3.exceptions
+from globus_compute_sdk.errors import TaskExecutionFailed
 from globus_sdk import GlobusAPIError, NetworkError
 
 EXIT_AMBIGUOUS = 75  # EX_TEMPFAIL: submission state unknown, check before resubmitting
@@ -99,8 +100,13 @@ def _run_on_fresh_connection(client, web, **kwargs):
 
 
 def wait(client, task_id, poll=2.0):
+    """Poll until done. A task that failed on the endpoint comes back as
+    {"exception": text}: the SDK raises it from get_task instead of returning it."""
     while True:
-        task = retry(client.get_task, task_id)
+        try:
+            task = retry(client.get_task, task_id)
+        except TaskExecutionFailed as e:
+            return {"pending": False, "exception": str(e)}
         if not task.get("pending", True):
             return task
         time.sleep(poll)
