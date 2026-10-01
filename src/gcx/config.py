@@ -1,8 +1,14 @@
 """Personal, per-user configuration (never in the repo).
 
-One JSON file per cluster in ~/.config/gcx/clusters/<cluster>.json:
+One JSON file per cluster in ~/.config/gcx/clusters/<cluster>.json, written
+by `gcx setup`:
 
-    {"endpoint": "<endpoint uuid>", "state": "<transfer collection>:<keepalive state dir>"}
+    endpoint        endpoint UUID
+    state           <transfer collection>:<keepalive state dir>, for `gcx status`
+    policy          what the cluster's functions allow (see capabilities/build.py)
+    functions       {name: {uuid, sha256}} registered from that policy
+    keepalive       {mode: failover|single|none, primary, backup}
+    ssh, remote_root, endpoint_name, remote_state, email
 
 The pilot's single file, ~/.config/gc-endpoints.json, is still read as a
 fallback until setup writes the new layout.

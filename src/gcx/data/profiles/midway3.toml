@@ -1,0 +1,33 @@
+# UChicago RCC Midway3. Facts about the cluster, not about any user: personal
+# choices (accounts, directories, enabled commands) are asked by `gcx setup`
+# and stored in ~/.config/gcx/clusters/midway3.json.
+
+name = "midway3"
+description = "UChicago RCC Midway3"
+ssh_host = "midway3.rcc.uchicago.edu"   # round-robin over login1,3,4,5,6
+scheduler = "slurm"
+
+# Login nodes reachable by name from outside, for primary/backup failover.
+# login2 is outside the round-robin rotation, so it is not offered.
+login_nodes = [
+  "midway3-login1.rcc.uchicago.edu",
+  "midway3-login3.rcc.uchicago.edu",
+  "midway3-login4.rcc.uchicago.edu",
+  "midway3-login5.rcc.uchicago.edu",
+  "midway3-login6.rcc.uchicago.edu",
+]
+
+# Globus Transfer collection exposing home as /~/ (used by `gcx status`).
+transfer_collection = "2fde89c0-6fb4-11eb-8c47-0eb1aa8d4337"
+transfer_home = "/~/"
+
+max_workers = 4
+submit_extra = []
+
+# Offered as defaults in the command menu ($USER expands on the cluster).
+read_roots = ["~", "/scratch/midway3/$USER"]
+script_roots = ["~", "/scratch/midway3/$USER"]
+
+[test_job]
+queue = "caslake"
+resources = ["--ntasks=1", "--cpus-per-task=1", "--mem=1G", "--time=00:02:00"]

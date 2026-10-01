@@ -17,7 +17,7 @@ Mac  --HTTPS-->  Globus Compute service  <--AMQPS (outbound)--  endpoint on midw
 - **Engine**: `ThreadPoolEngine`, 4 workers. Tasks run as threads in a worker
   process the endpoint starts on the login node. They never run on compute
   nodes; jobs go through `sbatch` like any other login-node command.
-- **Locked-down template** (`endpoint/midway3/user_config_template.yaml.j2`).
+- **Locked-down template** (`src/gcx/data/endpoint/user_config_template.yaml.j2`).
   The default template lets each task install arbitrary packages, `curl | sh`
   the uv installer and `eval` user-supplied `worker_init`. All of that is
   removed, and the schema rejects every user-supplied variable. The worker's
@@ -133,7 +133,10 @@ Cron is permitted (`/etc/cron.deny` is empty), and crontabs live on each node's
 local `/var`, so they survive a reboot. A reimage of the node would wipe them.
 
 Roles: **primary `midway3-login4`, backup `midway3-login3`.** Both run
-`~/gc-endpoint/keepalive.sh <role>` from cron every 2 minutes. State lives in
+`~/gc-endpoint/keepalive.sh <role>` from cron every 2 minutes. The script
+(`src/gcx/data/keepalive.sh`) is the same everywhere; its `keepalive.env`
+names the mode (`failover` or `single`) and nodes, and each node derives its
+role from `hostname -s`. State lives in
 `~/gc-endpoint/state/`:
 
 | File | Meaning |
@@ -181,6 +184,43 @@ run concurrently.
 - The shared `endpoint.log` shows strictly alternating begin/end pairs, so the
   two nodes never ran the endpoint at once.
 - A real reboot was not tested; cron was disabled instead.
+
+## Setup
+
+`gcx setup <cluster>` (`src/gcx/setup/steps.py`) runs ordered, idempotent
+steps. Each one checks the current state, mostly from one probe round trip
+(`probe.sh`), and either reports OK or applies a change and re-checks:
+
+ssh → probe → venv → tokens → configure → endpoint-files → policy →
+register → allowlist → running → config → keepalive → keepalive-files →
+cron → enforced
+
+then `doctor` and a test job.
+
+Rules:
+
+- **The allowlist goes into `config.yaml` before the first start**, so a new
+  endpoint is never briefly unrestricted.
+- **A first start by setup also writes the keepalive lease**, so on a
+  failover cluster the other node's cron sees a holder and does not start a
+  second copy.
+- **Cron is proven by heartbeats, not by reading crontabs.** Login nodes can't
+  reach each other, so a crontab on another node can't be read. A node whose
+  heartbeat is fresh has working cron.
+- **Keepalive mode is probe, then degrade**: `failover` when the profile has
+  named login nodes and cron works, `single` with cron only, `none` without
+  cron.
+
+**Adoption.** Midway3 was installed by hand during the pilot. Its personal
+config records `remote_root ~/gc-endpoint` and the failover roles, so setup
+manages it in place. The first run rewrote four files with no change in
+behaviour: the generic keepalive and its `.env`, and two endpoint files. It
+restarted the endpoint through the keepalive. After that,
+`gcx setup midway3 --dry-run` reports "nothing to change". Deleting the
+endpoint ID and state path from the personal config and re-running restored
+them exactly, without touching the cluster. The test job (59852493 on
+`caslake`/`pi-dfreedman`) was submitted, followed and read back through
+`gcx`, matching a random token.
 
 ## Submission safety
 

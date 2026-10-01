@@ -15,6 +15,7 @@
     gcx register <cluster>           register the cluster's functions from its policy
     gcx allowlist <cluster> [--apply | --off]   restrict the endpoint to those functions
     gcx doctor <cluster>             check that the cluster works and is locked down
+    gcx setup <cluster> [--dry-run] [--yes]   install / update everything, then test it
 
 Paths are relative to your cluster home unless absolute; ~ and $VARS expand on
 the cluster (an unquoted ~ that your laptop shell expanded is mapped back). Add --json for machine-readable output, --no-wait to print the
@@ -36,7 +37,7 @@ from pathlib import Path
 from globus_compute_sdk import Client, ShellFunction
 from globus_compute_sdk.serialize import JSONData
 
-from gcx import allowlist, config, doctor, registry
+from gcx import allowlist, config, doctor, profiles, registry
 from gcx.capabilities.build import MUTATING
 from gcx.transport import EXIT_AMBIGUOUS, AmbiguousSubmission, retry, run_at_most_once, wait
 
@@ -158,36 +159,63 @@ def render(verb, res, as_json):
     return res.get("rc", 0)
 
 
-def call(cluster, verb, kwargs, as_json=False, no_wait=False):
+def call_capability(cluster, fname, no_wait=False, client=None, **kwargs):
+    """Run one registered function; returns its result dict (or the task id).
+
+    Raises AmbiguousSubmission for state-changing calls whose delivery is unknown.
+    """
     cfg = config.load(cluster)
-    fname = VERBS[verb][0]
     funcs = cfg.get("functions") or {}
-    client = _client()
-    if fname in funcs:
-        fid = funcs[fname]["uuid"]
-    elif verb == "sh" and not funcs:
-        # Pilot path: no functions registered yet, so use a plain ShellFunction.
-        fid = retry(client.register_function, ShellFunction("{cmd}", walltime=kwargs["walltime"]))
-        kwargs = {"cmd": kwargs["cmd"]}
-    else:
+    if fname not in funcs:
+        raise NotEnabled(cluster, fname, funcs)
+    client = client or _client()
+    fid = funcs[fname]["uuid"]
+    if fname in MUTATING:
+        task_id = run_at_most_once(client, cfg["endpoint"], fid, **kwargs)
+    else:  # read-only: a duplicate run is harmless
+        task_id = retry(client.run, endpoint_id=cfg["endpoint"], function_id=fid, **kwargs)
+    if no_wait:
+        return task_id
+    task = wait(client, task_id)
+    if "exception" in task:
+        return {"rc": 1, "stdout": "", "stderr": task["exception"] + "\n"}
+    return task["result"]
+
+
+class NotEnabled(Exception):
+    def __init__(self, cluster, fname, funcs):
+        verb = next((v for v, (f, *_) in VERBS.items() if f == fname), fname)
         enabled = sorted(v for v, (f, *_) in VERBS.items() if f in funcs)
-        sys.exit(f"[gcx] `{verb}` is not enabled on {cluster}"
-                 + (f" (enabled: {', '.join(enabled)})" if enabled else
-                    f"; run `gcx register {cluster}`"))
+        super().__init__(f"`{verb}` is not enabled on {cluster}"
+                         + (f" (enabled: {', '.join(enabled)})" if enabled else
+                            f"; run `gcx register {cluster}`"))
+
+
+def call(cluster, verb, kwargs, as_json=False, no_wait=False):
+    fname = VERBS[verb][0]
+    funcs = config.load(cluster).get("functions") or {}
     try:
-        if fname in MUTATING:
-            task_id = run_at_most_once(client, cfg["endpoint"], fid, **kwargs)
-        else:  # read-only: a duplicate run is harmless
-            task_id = retry(client.run, endpoint_id=cfg["endpoint"], function_id=fid, **kwargs)
+        if verb == "sh" and not funcs:
+            # Pilot path: no functions registered yet, so use a plain ShellFunction.
+            client = _client()
+            fid = retry(client.register_function, ShellFunction("{cmd}", walltime=kwargs["walltime"]))
+            task_id = run_at_most_once(client, config.load(cluster)["endpoint"], fid, cmd=kwargs["cmd"])
+            if no_wait:
+                print(task_id)
+                return 0
+            return collect(client, task_id, verb, as_json)
+        res = call_capability(cluster, fname, no_wait=no_wait, **kwargs)
+    except NotEnabled as e:
+        sys.exit(f"[gcx] {e}")
     except AmbiguousSubmission as e:
         print(f"[gcx] connection lost after the request may have been sent ({e}).\n"
               f"[gcx] `{verb}` may or may not have run on {cluster}; check "
               f"(`gcx {cluster} jobs`) before retrying.", file=sys.stderr)
         return EXIT_AMBIGUOUS
     if no_wait:
-        print(task_id)
+        print(res)
         return 0
-    return collect(client, task_id, verb, as_json)
+    return render(verb, res, as_json)
 
 
 def collect(client, task_id, verb=None, as_json=False):
@@ -224,7 +252,7 @@ def status(cluster):
     return 0 if ok else 1
 
 
-GLOBAL = ("status", "result", "register", "allowlist", "doctor")
+GLOBAL = ("status", "result", "register", "allowlist", "doctor", "setup")
 
 
 def _global(argv, prog):
@@ -232,6 +260,10 @@ def _global(argv, prog):
     p.add_argument("target")
     p.add_argument("--force", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--json", action="store_true")
+    if argv[0] == "setup":
+        p.add_argument("--dry-run", action="store_true", help="show what would change; change nothing")
+        p.add_argument("--yes", action="store_true", help="accept every default (no questions)")
+        p.add_argument("--no-test-job", action="store_true", help="skip the end-to-end test job")
     if argv[0] == "allowlist":
         g = p.add_mutually_exclusive_group()
         g.add_argument("--apply", action="store_true", help="push the config and restart the endpoint")
@@ -243,6 +275,13 @@ def _global(argv, prog):
         return collect(_client(), a.target, as_json=a.json)
     if argv[0] == "doctor":
         return doctor.main(_client(), a.target)
+    if argv[0] == "setup":
+        from gcx.setup import steps
+        try:
+            return steps.run(a.target, dry_run=a.dry_run, assume_yes=a.yes,
+                             test_job=False if a.no_test_job or a.dry_run else None)
+        except (profiles.UnknownCluster, steps.RemoteError) as e:
+            sys.exit(f"[gcx] {e}")
     if argv[0] == "allowlist":
         try:
             return allowlist.run(_client(), a.target, apply=a.apply or a.off, off=a.off)

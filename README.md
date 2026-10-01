@@ -68,16 +68,38 @@ Tokens are long-lived refresh tokens. There is no daily re-login.
 |---|---|
 | `src/gcx/` | the `gcx` command (`cli.py`), network-safety logic (`transport.py`), personal config (`config.py`), function registration (`registry.py`) |
 | `src/gcx/capabilities/` | `runtime.py`, the code that runs on the cluster; `build.py`, which bakes a policy into it |
-| `endpoint/midway3/` | endpoint config, keepalive script, crontabs, `deploy.sh` |
+| `src/gcx/setup/` | `gcx setup`: probe, command menu, idempotent install steps |
+| `src/gcx/data/` | cluster profiles (`profiles/*.toml`), endpoint templates, the keepalive script |
 | `tests/` | unit tests incl. a fake scheduler (`uv run pytest`), live outage test (`tests/outage_test.sh`) |
 | `docs/design.md` | architecture, failover design, measured results, open items |
 
-## Changing the Midway3 endpoint
+## Setting up a cluster
 
-Edit files in `endpoint/midway3/`, then `endpoint/midway3/deploy.sh` to see the
-diff against what is deployed, and `--apply` to push it. Deploying uses SSH
-(this is setup, not day-to-day use). Crontabs are per login node and installed
-by hand. See `docs/design.md`.
+```bash
+gcx setup <cluster> --dry-run     # what would change; changes nothing
+gcx setup <cluster>               # install / update, then `doctor` and a test job
+```
+
+`gcx setup` works from a profile of facts about the cluster
+(`src/gcx/data/profiles/<cluster>.toml`) and your answers, stored in
+`~/.config/gcx/clusters/<cluster>.json`. It goes step by step, and each step
+checks before acting, so re-running it on a finished cluster changes nothing.
+The steps:
+
+1. **Check** that SSH works.
+2. **Probe** the login node in one round trip: scheduler, cron, Python, outbound
+   access to Globus, your accounts.
+3. **Install** the endpoint into `~/.gcx/venv`.
+4. **Log in to Globus** for the endpoint (you paste a code).
+5. **Ask** which commands to allow (the command menu).
+6. **Register** the functions and **write the allowlist** before the endpoint
+   first starts.
+7. **Set up the keepalive.** Failover if the cluster has named login nodes and
+   cron, otherwise one node with cron, otherwise none.
+8. **Test**: run `doctor`, then submit, follow and read back a test job.
+
+Setup uses SSH (this is setup, not day-to-day use). It never logs in for you;
+you do the MFA and Globus prompts.
 
 The SDK version in `pyproject.toml` must match `globus-compute-endpoint` in
 `~/gc-endpoint/venv` on the cluster (currently 4.17.1).

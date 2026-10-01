@@ -23,7 +23,8 @@ the cluster side.
   `ShellFunction` gets 403 by design. Policy changes are
   `gcx register <c>` + `gcx allowlist <c> --apply`, and only with the human's
   OK. `gcx doctor <c>` is the health check.
-- **Changing endpoint files**: edit `endpoint/midway3/`, then
-  `endpoint/midway3/deploy.sh` (diff), then `--apply`. Do not edit files on
-  the cluster directly.
+- **Changing what is installed on a cluster**: edit the profile or templates
+  under `src/gcx/data/`, then `gcx setup <c> --dry-run`, then `gcx setup <c>`.
+  Do not edit files on the cluster directly. Setup asks questions and needs
+  the human for MFA and Globus logins, so run it only when asked.
 - **Commit and push only when asked.**
