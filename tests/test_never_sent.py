@@ -10,7 +10,7 @@ import pytest
 import requests
 from globus_sdk.exc import convert_request_exception
 
-from globus_cluster_control.cli import never_sent, transient
+from gcx.transport import never_sent, transient
 
 
 def _server(handler):

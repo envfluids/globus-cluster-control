@@ -16,11 +16,11 @@ Status: **pilot, Midway3 only** (2026-10-01). Design, failover and test record:
 ## Use
 
 ```bash
-uv sync                                   # once
-.venv/bin/gc midway3 'squeue -u $USER'    # run, wait, print; exits with the command's rc
-.venv/bin/gc midway3 --submit 'sbatch job.sbatch'   # print a task id and return
-.venv/bin/gc --result <task-id>           # collect it later
-.venv/bin/gc --status midway3             # which login node holds the endpoint
+uv tool install -e .                      # once, from the repo; puts gcx on PATH
+gcx midway3 'squeue -u $USER'             # run, wait, print; exits with the command's rc
+gcx midway3 --submit 'sbatch job.sbatch'  # print a task id and return
+gcx --result <task-id>                    # collect it later
+gcx --status midway3                      # which login node holds the endpoint
 ```
 
 - Commands run as you, in your home directory, on a Midway3 login node, under
@@ -28,20 +28,22 @@ uv sync                                   # once
 - Output is capped at a few MB per result. For large files, use Globus Transfer.
 - **Exit code 75** means the connection dropped after the request may have
   reached Globus. The command may or may not be running. Check (for example
-  with `squeue`) before resubmitting. `gc` never resubmits on its own in that
+  with `squeue`) before resubmitting. `gcx` never resubmits on its own in that
   case, so a retried `sbatch` cannot run twice.
 - `--status` reads the keepalive state through Globus *Transfer*, so it still
   works when the compute endpoint is down. It exits 1 if no node holds a fresh
   lease.
 
-Configuration lives in `~/.config/gc-endpoints.json`
-(format: [endpoints.example.json](endpoints.example.json)).
+Configuration lives in `~/.config/gcx/clusters/<cluster>.json`
+(format: [endpoints.example.json](endpoints.example.json); the pilot's
+`~/.config/gc-endpoints.json` is still read as a fallback). The old `gc`
+command still works but is deprecated.
 
 ## Authentication
 
 Both logins open a browser and are for the human to do, not an agent:
 
-- **Mac**: the first `gc` call with no stored tokens prints a login URL.
+- **Mac**: the first `gcx` call with no stored tokens prints a login URL.
 - **Cluster**: `ssh -t midway3 '~/gc-endpoint/venv/bin/globus-compute-endpoint login'`.
 
 Tokens are long-lived refresh tokens. There is no daily re-login.
@@ -50,7 +52,7 @@ Tokens are long-lived refresh tokens. There is no daily re-login.
 
 | Path | What |
 |---|---|
-| `src/globus_cluster_control/cli.py` | the `gc` command |
+| `src/gcx/` | the `gcx` command (`cli.py`), network-safety logic (`transport.py`), personal config (`config.py`) |
 | `endpoint/midway3/` | endpoint config, keepalive script, crontabs, `deploy.sh` |
 | `tests/` | unit tests (`uv run pytest`), live outage test (`tests/outage_test.sh`) |
 | `docs/design.md` | architecture, failover design, measured results, open items |

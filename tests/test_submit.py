@@ -11,7 +11,7 @@ import pytest
 import requests
 from globus_sdk.exc import convert_request_exception
 
-from globus_cluster_control import cli
+from gcx import cli, transport
 from test_never_sent import _failure, _free_port, _read_then, _server
 
 
@@ -47,7 +47,7 @@ class FakeClient:
 
 @pytest.fixture(autouse=True)
 def no_sleep(monkeypatch):
-    monkeypatch.setattr(cli.time, "sleep", lambda s: None)
+    monkeypatch.setattr(transport.time, "sleep", lambda s: None)
 
 
 def refused():
@@ -68,14 +68,14 @@ def test_unsent_failures_are_retried_until_success():
 
 def test_possibly_delivered_failure_is_not_retried():
     c = FakeClient([reset_after_request()])
-    with pytest.raises(cli.AmbiguousSubmission):
+    with pytest.raises(transport.AmbiguousSubmission):
         cli.submit(c, "ep", "sbatch x", 60)
     assert c.run_calls == 1
 
 
 def test_unsent_then_ambiguous_stops_at_the_ambiguous_one():
     c = FakeClient([refused(), reset_after_request(), refused()])
-    with pytest.raises(cli.AmbiguousSubmission):
+    with pytest.raises(transport.AmbiguousSubmission):
         cli.submit(c, "ep", "sbatch x", 60)
     assert c.run_calls == 2
 

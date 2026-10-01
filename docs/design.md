@@ -23,7 +23,7 @@ Mac  --HTTPS-->  Globus Compute service  <--AMQPS (outbound)--  endpoint on midw
   removed, and the schema rejects every user-supplied variable. The worker's
   `PATH` is pinned in `user_environment.yaml`.
 - **Sandboxing is off.** It would run each command in a fresh per-task
-  directory and break relative paths such as `tail slurm-123.out`. `gc` drops
+  directory and break relative paths such as `tail slurm-123.out`. `gcx` drops
   the resulting per-task warning.
 - **Network**: the Midway3 login node reaches `compute.api.globus.org:443` and
   `compute.amqps.globus.org` on 443 and 5671.
@@ -76,7 +76,7 @@ run concurrently.
 |---|---|
 | 11:42:18 | login4 "fails": its cron entry is commented out and the endpoint stopped |
 | 11:48:24 | login3 starts the endpoint (primary heartbeat 364 s old) |
-| 11:48:35 | a `gc` task from the Mac runs on login3; same endpoint ID, nothing changed on the Mac |
+| 11:48:35 | a `gcx` task from the Mac runs on login3; same endpoint ID, nothing changed on the Mac |
 | 11:49:21 | login4's cron entry restored |
 | 11:52:15 | login3 sees the fresh primary heartbeat and stops |
 | 11:54:16 | login4 starts the endpoint again |
@@ -92,7 +92,7 @@ run concurrently.
 
 `globus_sdk`'s transport retries **any** network error up to 5 times, POSTs
 included. A dropped reply to a submit would therefore resubmit, which means a
-second `sbatch`. `gc` makes submission at-most-once:
+second `sbatch`. `gcx` makes submission at-most-once:
 
 1. The SDK's own retries are off for the submit request
    (`retry_config.tune(max_retries=0)`).
@@ -114,7 +114,7 @@ Registering the function and waiting for results are retried freely. A
 duplicate registration is harmless, and result checks only read.
 
 `Client()` makes a version-check request when it is constructed. Without a
-retry, `gc` crashed outright if the network was down at startup; it is now
+retry, `gcx` crashed outright if the network was down at startup; it is now
 retried. The live outage test found this.
 
 ## Test record
@@ -122,16 +122,16 @@ retried. The live outage test found this.
 - `uv run pytest`: 10 tests. They cover the classifier (against real socket
   failures wrapped the way globus_sdk wraps them) and the submit path (with a
   stand-in client: runs counted, SDK retries off and then restored).
-- `tests/outage_test.sh` routes `gc` through `tests/flaky_proxy.py`, which
+- `tests/outage_test.sh` routes `gcx` through `tests/flaky_proxy.py`, which
   refuses connections and tears down open tunnels while "down". PASS:
-  - **A**: a 90 s outage while a 30 s command runs. `gc` retries and prints
+  - **A**: a 90 s outage while a 30 s command runs. `gcx` retries and prints
     the result 9 s after the network returns.
-  - **B**: the network is down when `gc` starts and comes up after 40 s. `gc`
+  - **B**: the network is down when `gcx` starts and comes up after 40 s. `gcx`
     retries and the command runs **exactly once** (counted on the cluster).
 - Job round trip on `caslake` with `-A pi-dfreedman` (there is no
   dfreedman-only CPU partition; the only one restricted to that account is
   `schmidt-gpu`): job 59840137 was submitted, followed with `sacct` and its
-  output read, all through `gc`.
+  output read, all through `gcx`.
 - **Not tested: a real Wi-Fi drop.** The proxy simulates one, but this
   session could not drop the real network without cutting itself off.
 
@@ -147,4 +147,4 @@ retried. The live outage test found this.
   Nothing was found for Derecho, which is being retired.
 - **Cron email** from the failover test was not confirmed received.
 - **Reimage risk.** If both nodes' crontabs are wiped, nothing restarts the
-  endpoint. `gc --status` shows both heartbeats as STALE in that case.
+  endpoint. `gcx --status` shows both heartbeats as STALE in that case.

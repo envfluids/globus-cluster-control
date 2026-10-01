@@ -1,15 +1,15 @@
 #!/bin/bash
-# Live outage test against a real endpoint: routes gc through tests/flaky_proxy.py
+# Live outage test against a real endpoint: routes gcx through tests/flaky_proxy.py
 # and cuts the "network" at two points.
 #
 #   tests/outage_test.sh [cluster]     # default midway3; takes ~3 minutes
 #
-#   A. outage while waiting for a result  -> gc retries and prints the result
-#   B. outage at submit time              -> gc retries; the command runs exactly once
+#   A. outage while waiting for a result  -> gcx retries and prints the result
+#   B. outage at submit time              -> gcx retries; the command runs exactly once
 set -u
 cluster=${1:-midway3}
 here=$(cd "$(dirname "$0")" && pwd)
-gc="$here/../.venv/bin/gc"
+gc="$here/../.venv/bin/gcx"
 port=18080
 flag=$(mktemp -u "${TMPDIR:-/tmp}/gc-net-down.XXXX")
 fail=0
