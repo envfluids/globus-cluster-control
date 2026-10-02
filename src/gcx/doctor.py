@@ -10,7 +10,7 @@ import json
 
 from globus_compute_sdk import ShellFunction
 
-from gcx import allowlist, config, registry
+from gcx import allowlist, config, registry, restart
 from gcx.capabilities import build
 from gcx.transport import retry, wait
 
@@ -32,6 +32,14 @@ def checks(client, cluster):
     if not funcs:
         return
 
+    online = restart.status(client, cfg["endpoint"])
+    mode = cfg.get("keepalive", {}).get("mode", "?")
+    hint = {"on-use": f"; the next gcx call restarts it (needs `gcx login {cluster}`)",
+            "none": f"; start it with `gcx setup {cluster}`"}.get(mode, "")
+    yield "endpoint online (Globus service)", online == "online", \
+        f"{online} (keepalive: {mode})" + ("" if online == "online" else hint)
+    if online != "online":
+        return
     ping = _run(client, cfg, "gcx_ping")
     sha = hashlib.sha256(json.dumps(cfg["policy"], sort_keys=True).encode()).hexdigest()
     yield "endpoint answers", True, f"{ping['host']}, Python {ping['python']}"

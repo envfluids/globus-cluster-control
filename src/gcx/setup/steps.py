@@ -289,9 +289,12 @@ def keepalive_files(c):
     return {f"{c.root}/keepalive.env": env, f"{c.root}/keepalive.sh": script}
 
 
+CRON_MODES = ("failover", "single")
+
+
 def s_keepalive_files(c):
-    if c.cfg["keepalive"]["mode"] == "none":
-        return Result(OK, "no keepalive")
+    if c.cfg["keepalive"]["mode"] not in CRON_MODES:
+        return Result(OK, "no cron keepalive")
     diff = _differing(c, keepalive_files(c))
     if not diff:
         return Result(OK, "keepalive script and settings current")
@@ -328,6 +331,8 @@ def _alias_resolves(alias, fqdn):
 
 def s_cron(c):
     ka = c.cfg["keepalive"]
+    if ka["mode"] == "on-use":
+        return Result(OK, "no cron here; gcx restarts the endpoint over SSH when a call finds it offline")
     if ka["mode"] == "none":
         return Result(OK, f"not supervised: re-run `gcx setup {c.cluster}` if the endpoint stops")
     beats = _heartbeats(c)
@@ -366,7 +371,7 @@ def s_service(c):
         "endpoint must restart so Globus enforces the allowlist"
 
     def act():
-        if c.cfg.get("keepalive", {}).get("mode", "none") != "none":
+        if c.cfg.get("keepalive", {}).get("mode", "none") in CRON_MODES:
             c.remote.run(f"touch {c.remote.q(c.root + '/state/restart-request')}")
             print("  restart requested; the keepalive picks it up within 2 minutes")
         else:
@@ -456,7 +461,8 @@ def run_test_job(c, ask_first=True):
     acct = pol.get("accounts", [None])[0] if pol.get("accounts") else None
     queue = c.prof["test_job"].get("queue") or (pol.get("queues") or [None])[0]
     if ask_first:
-        print(f"\nTest job: 1 CPU for ~1 minute on {c.cluster}"
+        res = " ".join(c.prof["test_job"].get("resources", [])) or "scheduler defaults"
+        print(f"\nTest job (~1 minute) on {c.cluster}: {res}"
               + (f", account {acct}" if acct else "") + (f", queue {queue}" if queue else "") + ".")
         acct = c.ask.ask("Account", acct or "") or None
         queue = c.ask.ask("Queue", queue or "") or None

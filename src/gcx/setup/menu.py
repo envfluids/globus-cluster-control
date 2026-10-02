@@ -147,9 +147,12 @@ def choose_keepalive(cluster, prof, facts, ask):
     here = facts.get("host", "")
     named = [profiles.short(n) for n in prof["login_nodes"]]
     if facts.get("cron") != "ok":
-        print(f"\n{cluster}: cron is not available ({facts.get('cron')}), so nothing will "
-              f"restart the endpoint if its login node reboots. `gcx status {cluster}` will "
-              f"show it; re-run `gcx setup {cluster}` to start it again.")
+        print(f"\n{cluster}: cron is not available ({facts.get('cron')}), so nothing on the "
+              f"cluster can restart the endpoint after a login-node reboot.")
+        if ask.confirm("Restart it on use instead? (when a gcx call finds it offline and your "
+                       f"SSH connection to {cluster} is up, gcx restarts it over SSH)", True):
+            return {"mode": "on-use"}
+        print(f"  Then re-run `gcx setup {cluster}` whenever `gcx doctor {cluster}` shows it offline.")
         return {"mode": "none"}
     if here in named and len(named) > 1:
         others = [n for n in named if n != here]

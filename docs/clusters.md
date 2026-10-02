@@ -8,8 +8,8 @@ last full setup plus test job.
 |---|---|---|---|---|---|
 | midway3 | set up, locked down | Slurm | failover login4 → login3 | yes | 2026-10-01 |
 | dsi | set up, locked down | Slurm | single (fe02) | no (no collection exposes home) | 2026-10-01 |
-| delta | profiled | Slurm | expected single | yes | — |
-| deltaai | profiled | Slurm | expected single | no | — |
+| delta | set up, locked down | Slurm | on-use (no cron) | yes, but no keepalive state to show | 2026-10-02 |
+| deltaai | set up, locked down | Slurm | on-use (no cron) | no | 2026-10-02 |
 | stampede3 | profiled | Slurm | unknown (cron policy unknown) | yes | — |
 | derecho | profiled | PBS | expected single | yes | — |
 | polaris | profiled | PBS | expected single | no | — |
@@ -60,3 +60,85 @@ login the first time it ran without one.
   - The load balancer may send a new SSH connection to fe01. Setup and
     `doctor` don't care which node they land on; only the cron entry is tied
     to fe02.
+
+## delta (2026-10-02)
+
+Fresh install. The automatic part (probe, install) ran without a terminal;
+the user ran the rest.
+
+- **Probe** (`dt-login04`):
+  - Slurm in `/usr/bin`; Python 3.9 on the login node; uv in `~/.local/bin`.
+  - Outbound 443 and 5671 open; home `/u/awikner`.
+  - **cron is denied** ("not allowed to access crontab because of pam
+    configuration") and **scrontab is disabled**, so nothing on Delta can
+    restart the endpoint.
+- **Accounts**: only `bdiu-delta-gpu` (about 10,000 GPU hours) and `noalloc`.
+  The CPU account `bdiu-delta-cpu` from the agent-toolkit config no longer
+  exists, so the test job uses a GPU partition.
+- **Choices**:
+  - commands: status, submit, read, shell;
+  - read and submit under `~`, `/work/nvme/bdiu/$USER`, `/work/hdd/bdiu/$USER`.
+    The first choice was the whole `/work/nvme` and `/work/hdd` filesystems;
+    it was narrowed the same day;
+  - account `bdiu-delta-gpu`;
+  - queues `gpuA40x4-interactive` and the A100 and H200 partitions (with
+    their interactive variants);
+  - keepalive **on-use**.
+- **Result**:
+  - `doctor` passes on every check: allowlist of 10 functions in force; a raw
+    `ShellFunction` gets 403.
+  - Test job 22621089 on `gpuA40x4-interactive` (node `gpub034`, 4 s)
+    completed, and its output carried the run's token.
+  - `gcx setup delta --dry-run` reports nothing to change.
+- **Restart on use, tested live**:
+  - 08:15:54: the endpoint was stopped, and the Globus service reported it
+    offline.
+  - The next `gcx delta jobs` printed "endpoint is offline; restarting it
+    over SSH", started it on dt-login04, and returned the job list. The whole
+    call took 21.5 s, and one endpoint process was left running.
+- **Limits**:
+  - Recovery needs a live SSH connection (`gcx login delta`, 24 h). Without
+    one, gcx exits 69 and says so.
+  - Login nodes reboot on NCSA's schedule; dt-login04 rebooted Fri Oct 2,
+    23:59 CDT. The first call after a reboot pays the restart (about 20 s).
+  - Login is a round-robin with no per-node names, so a restart lands on
+    whichever node the SSH connection is pinned to.
+  - `gcx status delta` has a Transfer collection, but without a keepalive
+    there are no heartbeat files to show. `gcx doctor delta` is the check.
+
+## deltaai (2026-10-02)
+
+Fresh install, run by the user. The GH200 login nodes are **aarch64**: uv's
+Python 3.12 and the `globus-compute-endpoint` wheels installed without
+trouble. The endpoint reports Python 3.12.11.
+
+- **Probe** (`gh-login02`): Slurm; cron disabled as on Delta; accounts
+  `bdiu-dtai-gh` and `noalloc`. Partitions bill mostly by GPU (4 GH200 per
+  node).
+- **Choices**:
+  - commands: status, submit, read, shell;
+  - account `bdiu-dtai-gh`;
+  - queues `ghx4`, `ghx4-interactive`;
+  - keepalive **on-use**;
+  - directories `~`, `/work/nvme/bdiu/$USER`, `/work/hdd/bdiu/$USER`
+    (narrowed from the whole filesystems the same day; `/work` is shared
+    with Delta).
+- **Setup's last step failed at first**: DeltaAI rejects jobs that request
+  no GPU, and the profile's test job asked for 1 CPU only. Fixed in the
+  profile (`--gpus-per-node=1` on `ghx4-interactive`). Re-run: test job
+  3292775 completed, and its output carried the run's token.
+- **Result**: `doctor` passes on every check; `gcx setup deltaai --dry-run`
+  reports nothing to change.
+- **Limits**: as for Delta (on-use restart needs `gcx login deltaai`). There
+  is no `gcx status`, because no Transfer collection exposes DeltaAI's home.
+
+### Bug found while narrowing (Delta, 2026-10-02)
+
+`gcx allowlist --apply` always asked the keepalive to restart the endpoint.
+On a cluster with no cron keepalive (on-use, none) nothing honoured that, so
+the call timed out. The endpoint kept the old allowlist while the laptop held
+the new function IDs, and calls would have been refused.
+
+`allowlist --apply` now restarts the endpoint directly over SSH when there is
+no cron keepalive, and clears the stale request. Re-applied on Delta, then
+used for DeltaAI.

@@ -99,8 +99,20 @@ def run(client, cluster, apply=False, off=False):
     if diff:
         tmp = path + ".gcx-new"
         _ssh(alias, f"cat > {shlex.quote(tmp)} && mv {shlex.quote(tmp)} {shlex.quote(path)}", stdin=new)
-    _ssh(alias, f"touch {state}/restart-request")
-    print(f"[gcx] pushed; waiting for the keepalive to restart the endpoint (up to {TIMEOUT_S // 60} min)")
+    if cfg.get("keepalive", {}).get("mode") in ("failover", "single"):
+        # Whichever login node holds the endpoint restarts it on its next cron tick.
+        _ssh(alias, f"touch {state}/restart-request")
+        print(f"[gcx] pushed; waiting for the keepalive to restart the endpoint "
+              f"(up to {TIMEOUT_S // 60} min)")
+    else:
+        # No cron keepalive here (on-use / none): restart directly. Clear any stale
+        # request so setup does not see a restart as pending forever.
+        ep, root = cfg["endpoint_name"], cfg.get("remote_root", "~/.gcx")
+        gce = f"{root}/venv/bin/globus-compute-endpoint"
+        _ssh(alias, f"rm -f {state}/restart-request; cd ~ && {gce} stop {ep} >/dev/null 2>&1; "
+                    f"sleep 5; rm -f ~/.globus_compute/{ep}/daemon.pid; "
+                    f"{gce} start --detach {ep}")
+        print("[gcx] pushed and restarted the endpoint over SSH; waiting for Globus")
     deadline = time.time() + TIMEOUT_S
     while time.time() < deadline:
         time.sleep(POLL_S)

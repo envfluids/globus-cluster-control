@@ -51,7 +51,7 @@ def test_test_dir_added_when_roots_do_not_cover_it():
 
 
 @pytest.mark.parametrize("facts, mode", [
-    ({"cron": "denied"}, "none"),
+    ({"cron": "denied"}, "on-use"),
     ({"host": "midway3-login2"}, "single"),      # not a named login node
     ({}, "failover"),                            # named node, cron ok
 ])
@@ -182,3 +182,16 @@ def test_full_menu_with_typed_answers(monkeypatch):
     assert pol["read_roots"] == ["~", "/scratch/midway3/$USER", "/net/monsoon"]
     assert pol["script_roots"] == ["~", "/scratch/midway3/$USER"]
     assert pol["capabilities"] == ["status", "submit", "read"]
+
+
+def test_cron_denied_and_on_use_declined_gives_none(monkeypatch):
+    typed(monkeypatch, "n")
+    c = ctx(facts={"cron": "denied"})
+    assert menu.choose_keepalive("delta", c.prof, c.facts, menu.Prompter()) == {"mode": "none"}
+
+
+def test_on_use_cluster_skips_cron_steps():
+    c = ctx({"keepalive": {"mode": "on-use"}})
+    assert steps.s_keepalive_files(c).status == steps.OK
+    r = steps.s_cron(c)
+    assert r.status == steps.OK and "restarts the endpoint over SSH" in r.detail

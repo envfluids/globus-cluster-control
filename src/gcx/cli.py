@@ -39,11 +39,12 @@ from pathlib import Path
 from globus_compute_sdk import Client, ShellFunction
 from globus_compute_sdk.serialize import JSONData
 
-from gcx import allowlist, config, doctor, profiles, registry
+from gcx import allowlist, config, doctor, profiles, registry, restart
 from gcx.capabilities.build import MUTATING
 from gcx.transport import EXIT_AMBIGUOUS, AmbiguousSubmission, retry, run_at_most_once, wait
 
 STALE_S = 360  # matches STALE in keepalive.sh
+EXIT_UNAVAILABLE = 69  # EX_UNAVAILABLE: endpoint offline and could not be restarted
 
 # Patch-level Python differences (3.12.x vs 3.12.y) are harmless for ShellFunction.
 warnings.filterwarnings("ignore", message=r"\s*Environment differences detected")
@@ -171,6 +172,7 @@ def call_capability(cluster, fname, no_wait=False, client=None, **kwargs):
     if fname not in funcs:
         raise NotEnabled(cluster, fname, funcs)
     client = client or _client()
+    restart.ensure_online(cluster, cfg, client)  # "on-use" clusters only
     fid = funcs[fname]["uuid"]
     if fname in MUTATING:
         task_id = run_at_most_once(client, cfg["endpoint"], fid, **kwargs)
@@ -209,6 +211,9 @@ def call(cluster, verb, kwargs, as_json=False, no_wait=False):
         res = call_capability(cluster, fname, no_wait=no_wait, **kwargs)
     except NotEnabled as e:
         sys.exit(f"[gcx] {e}")
+    except restart.EndpointOffline as e:
+        print(f"[gcx] {e}", file=sys.stderr)
+        return EXIT_UNAVAILABLE
     except AmbiguousSubmission as e:
         print(f"[gcx] connection lost after the request may have been sent ({e}).\n"
               f"[gcx] `{verb}` may or may not have run on {cluster}; check "
