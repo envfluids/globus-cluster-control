@@ -22,9 +22,13 @@ the cluster side.
   node, and do not delete files in `~/gc-endpoint/state/`. Use
   `gcx --status midway3`.
 - **The endpoint only runs registered gcx functions.** A raw Globus Compute
-  `ShellFunction` gets 403 by design. Policy changes are
-  `gcx register <c>` + `gcx allowlist <c> --apply`, and only with the human's
-  OK. `gcx doctor <c>` is the health check.
+  `ShellFunction` gets 403 by design. Policy changes go through
+  `gcx setup <c> --menu`, run by the human; `gcx doctor <c>` is the health
+  check.
+- **Per-cluster facts and lessons** are in `docs/clusters.md`. Read it before
+  changing a profile in `src/gcx/data/profiles/`.
+- **Day-to-day agent usage** is described by the generated skill
+  (`gcx skill --print`); keep `src/gcx/skill.py` in step with the CLI.
 - **Changing what is installed on a cluster**: edit the profile or templates
   under `src/gcx/data/`, then `gcx setup <c> --dry-run`, then `gcx setup <c>`.
   Do not edit files on the cluster directly. Setup asks questions and needs

@@ -1,0 +1,23 @@
+# Unit tests on the laptops colleagues use: Linux and macOS. They exercise the
+# platform-specific paths too -- GNU vs BSD stat in keepalive.sh, OpenSSH
+# parsing the generated ssh config, bash running the bundled morning-login --
+# and exec the cluster-side code under Python 3.9 and 3.13. Nothing here
+# touches a real cluster or Globus.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pytest:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync
+      - run: uv run pytest -q

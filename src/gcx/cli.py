@@ -15,9 +15,10 @@
     gcx register <cluster>           register the cluster's functions from its policy
     gcx allowlist <cluster> [--apply | --off]   restrict the endpoint to those functions
     gcx doctor <cluster>             check that the cluster works and is locked down
-    gcx setup <cluster> [--dry-run] [--yes]   install / update everything, then test it
+    gcx setup <cluster> [--dry-run] [--yes] [--menu]   install / update, then test; --menu changes choices
     gcx ssh-config [cluster ...] [--user U] [--apply]   SSH aliases with shared connections
     gcx login [cluster ...] [--refresh]   open those connections (you answer MFA), once a day
+    gcx skill [--print]              write the Claude Code skill (~/.claude/skills/gcx) from your config
 
 Paths are relative to your cluster home unless absolute; ~ and $VARS expand on
 the cluster (an unquoted ~ that your laptop shell expanded is mapped back). Add --json for machine-readable output, --no-wait to print the
@@ -37,7 +38,7 @@ import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 
-from globus_compute_sdk import Client, ShellFunction
+from globus_compute_sdk import Client
 from globus_compute_sdk.serialize import JSONData
 
 from gcx import allowlist, config, doctor, profiles, registry, restart
@@ -47,11 +48,9 @@ from gcx.transport import EXIT_AMBIGUOUS, AmbiguousSubmission, retry, run_at_mos
 STALE_S = 360  # matches STALE in keepalive.sh
 EXIT_UNAVAILABLE = 69  # EX_UNAVAILABLE: endpoint offline and could not be restarted
 
-# Patch-level Python differences (3.12.x vs 3.12.y) are harmless for ShellFunction.
+# The SDK compares the laptop's Python with the endpoint's; gcx sends only
+# source text and JSON, so version differences do not matter.
 warnings.filterwarnings("ignore", message=r"\s*Environment differences detected")
-# Sandboxing would run each command in a fresh per-task dir, breaking relative
-# paths, so it stays off on the endpoint and its per-task notice is dropped.
-SANDBOX_NOTICE = "WARNING: Task sandboxing will not work"
 
 
 def _verbs():
@@ -126,12 +125,13 @@ PBS_JOB_LINE = re.compile(r"^(\d+(?:\[\d*\])?(?:\.[\w.-]+)?)$")
 def job_id_of(res, scheduler):
     """The job id from a gcx_submit result.
 
-    Site submit filters may print banners to stdout before sbatch's own line
-    (TACC prints a welcome banner and an env dump), so take the LAST line that
-    looks like a job id. TODO: move into capabilities/runtime.py at the next
-    change that re-registers functions anyway.
+    The runtime extracts it (the last id-like line, since site submit filters
+    print banners first); functions registered before that fix returned the
+    whole stdout, so fall back to scanning it here.
     """
     pat = SLURM_JOB_LINE if scheduler == "slurm" else PBS_JOB_LINE
+    if res.get("job_id") and pat.match(str(res["job_id"])):
+        return res["job_id"]
     for line in reversed(res.get("stdout", "").strip().splitlines()):
         m = pat.match(line.strip())
         if m:
@@ -163,11 +163,6 @@ def _human(n):
 
 def render(verb, res, as_json, scheduler="slurm"):
     """Print a task result; return the exit code."""
-    if not isinstance(res, dict):  # pilot ShellFunction result
-        sys.stdout.write(res.stdout)
-        sys.stderr.writelines(l for l in res.stderr.splitlines(keepends=True)
-                              if not l.startswith(SANDBOX_NOTICE))
-        return res.returncode
     if as_json:
         print(json.dumps(res, indent=1))
         return res.get("rc", 0)
@@ -230,17 +225,7 @@ class NotEnabled(Exception):
 
 def call(cluster, verb, kwargs, as_json=False, no_wait=False):
     fname = VERBS[verb][0]
-    funcs = config.load(cluster).get("functions") or {}
     try:
-        if verb == "sh" and not funcs:
-            # Pilot path: no functions registered yet, so use a plain ShellFunction.
-            client = _client()
-            fid = retry(client.register_function, ShellFunction("{cmd}", walltime=kwargs["walltime"]))
-            task_id = run_at_most_once(client, config.load(cluster)["endpoint"], fid, cmd=kwargs["cmd"])
-            if no_wait:
-                print(task_id)
-                return 0
-            return collect(client, task_id, verb, as_json)
         res = call_capability(cluster, fname, no_wait=no_wait, **kwargs)
     except NotEnabled as e:
         sys.exit(f"[gcx] {e}")
@@ -305,6 +290,8 @@ def _global(argv, prog):
         p.add_argument("--dry-run", action="store_true", help="show what would change; change nothing")
         p.add_argument("--yes", action="store_true", help="accept every default (no questions)")
         p.add_argument("--no-test-job", action="store_true", help="skip the end-to-end test job")
+        p.add_argument("--menu", action="store_true",
+                       help="re-ask the command menu (current answers as defaults), then apply")
     if argv[0] == "allowlist":
         g = p.add_mutually_exclusive_group()
         g.add_argument("--apply", action="store_true", help="push the config and restart the endpoint")
@@ -320,7 +307,8 @@ def _global(argv, prog):
         from gcx.setup import steps
         try:
             return steps.run(a.target, dry_run=a.dry_run, assume_yes=a.yes,
-                             test_job=False if a.no_test_job or a.dry_run else None)
+                             test_job=False if a.no_test_job or a.dry_run else None,
+                             menu_again=a.menu)
         except (profiles.UnknownCluster, steps.RemoteError, steps.build.PolicyError) as e:
             sys.exit(f"[gcx] {e}")
     if argv[0] == "allowlist":
@@ -377,14 +365,18 @@ def ssh_config(args):
 
 def main(argv=None, prog="gcx"):
     argv = list(sys.argv[1:] if argv is None else argv)
-    # Pilot spellings: --status C, --result T.
-    if argv[:1] in (["--status"], ["--result"]):
-        argv[0] = argv[0][2:]
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__)
         sys.exit(0)
     if argv[0] == "login":
         login(argv[1:])
+    if argv[0] == "skill":
+        from gcx import skill
+        if argv[1:] == ["--print"]:
+            print(skill.render(), end="")
+        else:
+            skill.install()
+        sys.exit(0)
     if argv[0] == "ssh-config":
         try:
             sys.exit(ssh_config(argv[1:]))
@@ -397,10 +389,8 @@ def main(argv=None, prog="gcx"):
         if not rest:
             sys.exit(f"[gcx] what should run on {cluster}? See `{prog} --help`.")
         if rest[0] not in VERBS:
-            # Pilot form: gcx <cluster> '<shell command>'.
-            print(f"[gcx] treating this as `{prog} {cluster} sh '...'`; say `sh` explicitly",
-                  file=sys.stderr)
-            rest = ["sh"] + rest
+            sys.exit(f"[gcx] unknown command `{rest[0]}`; see `{prog} --help` "
+                     f"(arbitrary shell is `{prog} {cluster} sh '...'`, where enabled)")
         verb = rest[0]
         p = argparse.ArgumentParser(prog=f"{prog} {cluster} {verb}")
         if VERBS[verb][1]:
@@ -417,12 +407,6 @@ def main(argv=None, prog="gcx"):
         sys.exit(call(cluster, verb, kwargs, as_json=a.json, no_wait=a.no_wait))
     except config.NotConfigured as e:
         sys.exit(f"[gcx] {e}. Configured: {', '.join(config.configured()) or 'none'}")
-
-
-def legacy_main():
-    """`gc`, the pilot's name. Kept until colleagues' scripts move to gcx."""
-    print("[gcx] `gc` is deprecated; use `gcx`", file=sys.stderr)
-    main(prog="gc")
 
 
 if __name__ == "__main__":

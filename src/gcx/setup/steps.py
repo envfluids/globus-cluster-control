@@ -191,7 +191,8 @@ def s_policy(c):
             problem = str(e)
 
     def act():
-        c.cfg["policy"] = menu.build_policy(c.cluster, c.prof, c.facts, c.root, c.ask)
+        c.cfg["policy"] = menu.build_policy(c.cluster, c.prof, c.facts, c.root, c.ask,
+                                            current=c.cfg.pop("previous_policy", None))
         c.save()
     return Result(HUMAN, "choose which commands gcx may run" +
                   (f" (the saved choices are invalid: {problem})" if problem else ""), act)
@@ -412,12 +413,16 @@ STEPS = [
 NO_REPROBE = {"ssh", "probe", "policy", "register", "config", "keepalive"}
 
 
-def run(cluster, dry_run=False, assume_yes=False, test_job=None):
+def run(cluster, dry_run=False, assume_yes=False, test_job=None, menu_again=False):
     prof = profiles.load(cluster)
     try:
         cfg = config.load(cluster)
     except config.NotConfigured:
         cfg = {}
+    if menu_again and cfg.get("policy") and not dry_run:
+        # Re-ask the command menu with the current answers as defaults; the new
+        # policy is then registered and enforced by the usual steps.
+        cfg["previous_policy"] = cfg.pop("policy")
     c = Ctx(cluster, prof, cfg, Remote(cfg.get("ssh", cluster)), menu.Prompter(assume_yes))
     print(f"gcx setup {cluster}{' (dry run)' if dry_run else ''}")
     pending = 0
@@ -458,6 +463,8 @@ def run(cluster, dry_run=False, assume_yes=False, test_job=None):
         print(f"\n{cluster}: " + ("nothing to change." if not pending else
                                   f"{pending} step(s) would change; run without --dry-run."))
         return 0 if not pending else 2
+    from gcx import skill
+    skill.install(quiet=True)  # agents in every repo see what this cluster now allows
     print()
     rc = doctor.main(c.get_client(), cluster)
     if rc == 0 and test_job is not False:

@@ -9,9 +9,6 @@ by `gcx setup`:
     functions       {name: {uuid, sha256}} registered from that policy
     keepalive       {mode: failover|single|none, primary, backup}
     ssh, remote_root, endpoint_name, remote_state, email
-
-The pilot's single file, ~/.config/gc-endpoints.json, is still read as a
-fallback until setup writes the new layout.
 """
 
 import json
@@ -20,7 +17,6 @@ import shutil
 from pathlib import Path
 
 CONFIG_DIR = Path(os.environ.get("GCX_CONFIG_DIR", Path.home() / ".config" / "gcx"))
-LEGACY = Path.home() / ".config" / "gc-endpoints.json"
 
 
 class NotConfigured(Exception):
@@ -35,18 +31,11 @@ def load(cluster):
     f = cluster_file(cluster)
     if f.exists():
         return json.loads(f.read_text())
-    if LEGACY.exists():
-        entry = json.loads(LEGACY.read_text()).get(cluster)
-        if entry is not None:
-            return entry if isinstance(entry, dict) else {"endpoint": entry}
     raise NotConfigured(f"{cluster} is not set up: no {f}")
 
 
 def configured():
-    names = {p.stem for p in (CONFIG_DIR / "clusters").glob("*.json")}
-    if LEGACY.exists():
-        names |= set(json.loads(LEGACY.read_text()))
-    return sorted(names)
+    return sorted(p.stem for p in (CONFIG_DIR / "clusters").glob("*.json"))
 
 
 def save(cluster, data):

@@ -15,6 +15,8 @@ Status: **all seven clusters set up and locked down** (2026-10-02); per-cluster 
 
 ## Getting started
 
+Colleagues: the full walk-through is [docs/colleague-setup.md](docs/colleague-setup.md).
+
 From your laptop (macOS or Linux), with [uv](https://docs.astral.sh/uv/) and
 the [Globus CLI](https://docs.globus.org/cli/) installed:
 
@@ -78,17 +80,22 @@ gcx status midway3                           # which login node holds the endpoi
 
 Configuration lives in `~/.config/gcx/clusters/<cluster>.json`: endpoint ID,
 policy and the registered function IDs. The endpoint accepts **only** those
-functions. After changing a policy, run `gcx register <cluster>`, then
-`gcx allowlist <cluster> --apply`; calls are refused until both are done.
-`gcx doctor <cluster>` checks that everything works and is locked down. The pilot's `~/.config/gc-endpoints.json` and the
-`gcx <cluster> '<cmd>'` form still work; the old `gc` command is deprecated.
+functions. To change what a cluster allows, run `gcx setup <cluster> --menu`
+(it re-asks the menu with your current answers as defaults, then registers and
+enforces the result). `gcx doctor <cluster>` checks that everything works and
+is locked down.
+
+`gcx skill` (also run by every `gcx setup`) writes
+`~/.claude/skills/gcx/SKILL.md` from your config, so Claude Code agents in
+any repo know your clusters, what each allows, and the rules.
 
 ## Authentication
 
 Both logins open a browser and are for the human to do, not an agent:
 
-- **Mac**: the first `gcx` call with no stored tokens prints a login URL.
-- **Cluster**: `ssh -t midway3 '~/gc-endpoint/venv/bin/globus-compute-endpoint login'`.
+- **Laptop**: the first `gcx` call with no stored tokens prints a login URL.
+- **Each cluster's endpoint**: `gcx setup <cluster>` runs the endpoint's login
+  for you, over `ssh -t`, and you paste the code back.
 
 Tokens are long-lived refresh tokens. There is no daily re-login.
 
@@ -132,4 +139,6 @@ Setup uses SSH (this is setup, not day-to-day use). It never logs in for you;
 you do the MFA and Globus prompts.
 
 The SDK version in `pyproject.toml` must match `globus-compute-endpoint` in
-`~/gc-endpoint/venv` on the cluster (currently 4.17.1).
+each cluster's `~/.gcx/venv` (currently 4.17.1). After bumping it, `gcx setup
+<cluster>` reinstalls the endpoint to match. (Midway3's pilot install lives in
+`~/gc-endpoint` and is managed in place.)

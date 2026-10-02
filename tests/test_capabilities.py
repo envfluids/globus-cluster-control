@@ -254,3 +254,15 @@ def test_shell_only_when_enabled(env):
     assert refused(load()["gcx_shell"]("echo hi"))
     res = load(capabilities=["status", "shell"])["gcx_shell"]("echo hi; pwd")
     assert res["rc"] == 0 and res["stdout"] == f"hi\n{env.home}\n"
+
+
+def test_job_id_after_site_banner(env, tmp_path):
+    # TACC prints a banner and an env dump to stdout before sbatch's own line.
+    (env.home / "run.sbatch").write_text("#!/bin/bash\n")
+    fake = tmp_path / "bin2"
+    fake.mkdir()
+    (fake / "sbatch").write_text("#!/bin/sh\necho '---- Welcome ----'\necho 'SLURM_TACC_NODES=1'\necho 3557959\n")
+    (fake / "sbatch").chmod(0o755)
+    os.environ["PATH"] = f"{fake}:{os.environ['PATH']}"
+    res = load()["gcx_submit"]("~/run.sbatch")
+    assert res["job_id"] == "3557959"

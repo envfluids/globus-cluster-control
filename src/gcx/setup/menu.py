@@ -117,8 +117,13 @@ def _csv(facts, key):
     return [x for x in facts.get(key, "").split(",") if x]
 
 
-def build_policy(cluster, prof, facts, root, ask):
-    """Interactive command menu; returns a policy dict for capabilities/build.py."""
+def build_policy(cluster, prof, facts, root, ask, current=None):
+    """Interactive command menu; returns a policy dict for capabilities/build.py.
+
+    current: an existing policy (`gcx setup --menu`), whose answers become the
+    defaults, so changing one choice does not mean retyping the rest.
+    """
+    cur = current or {}
     print(f"\nWhich commands should gcx be able to run on {cluster}?")
     caps = []
     for cap, text, default in MENU:
@@ -126,9 +131,9 @@ def build_policy(cluster, prof, facts, root, ask):
             print(f"  - {text}: always on")
             caps.append(cap)
             continue
-        if ask.confirm(f"{text}?", default):
+        if ask.confirm(f"{text}?", cap in cur["capabilities"] if cur else default):
             caps.append(cap)
-    if "shell" in caps and not ask.confirm(
+    if "shell" in caps and "shell" not in cur.get("capabilities", []) and not ask.confirm(
             "Shell really on? It makes the other restrictions advisory", False):
         caps.remove("shell")
 
@@ -136,11 +141,11 @@ def build_policy(cluster, prof, facts, root, ask):
     test_dir = root + "/test"  # setup's own test job lives here
     if "read" in caps:
         roots = resolve_roots(ask.extend_list("Directories gcx may read under",
-                                              prof["read_roots"]), facts)
+                                              cur.get("read_roots") or prof["read_roots"]), facts)
         policy["read_roots"] = roots + ([test_dir] if not _covers(roots, test_dir) else [])
     if "submit" in caps:
         roots = resolve_roots(ask.extend_list("Directories gcx may submit scripts from",
-                                              prof["script_roots"]), facts)
+                                              cur.get("script_roots") or prof["script_roots"]), facts)
         policy["script_roots"] = roots + ([test_dir] if not _covers(roots, test_dir) else [])
         accounts = [a for a in _csv(facts, "accounts") if a != "default"]  # TACC lists a pseudo-account
         if not accounts and prof.get("accounts_from_groups"):
@@ -152,10 +157,11 @@ def build_policy(cluster, prof, facts, root, ask):
         if prof["scheduler"] == "slurm" and accounts:
             print(f"  Your accounts on {cluster}: {', '.join(accounts)}")
         policy["accounts"] = ask.choose_list("Accounts gcx may submit to",
-                                             accounts or prof.get("accounts", []))
+                                             cur.get("accounts") or accounts or prof.get("accounts", []))
         q = prof["test_job"].get("queue")
-        policy["queues"] = ask.choose_list("Queues/partitions gcx may submit to", [q] if q else [])
-        qos = ask.choose_list("QoS values gcx may request (blank for none)", [])
+        policy["queues"] = ask.choose_list("Queues/partitions gcx may submit to",
+                                           cur.get("queues") or ([q] if q else []))
+        qos = ask.choose_list("QoS values gcx may request (blank for none)", cur.get("qos", []))
         if qos:
             policy["qos"] = qos
         if prof["submit_extra"]:

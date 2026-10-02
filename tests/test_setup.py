@@ -269,3 +269,14 @@ def test_trailing_slash_is_not_a_new_directory(monkeypatch):
     got = menu.Prompter().extend_list("Dirs", ["~"])
     assert got == ["~", "/eagle/proj/"]
     assert menu.resolve_roots(got + ["~/"], {}) == ["~", "/eagle/proj"]
+
+
+def test_menu_again_prefills_current_answers(monkeypatch):
+    cur = {"scheduler": "slurm", "capabilities": ["status", "read"],
+           "read_roots": ["~", "/net/monsoon"]}
+    # submit? (default now no) read? (yes) shell? (no) | read dirs: add one, confirm
+    typed(monkeypatch, "", "", "", "/net/scratch/$USER", "")
+    c = ctx()
+    pol = menu.build_policy("dsi", c.prof, c.facts, c.root, menu.Prompter(), current=cur)
+    assert pol["capabilities"] == ["status", "read"]
+    assert pol["read_roots"] == ["~", "/net/monsoon", "/net/scratch/$USER"]

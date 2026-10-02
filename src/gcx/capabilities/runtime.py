@@ -205,9 +205,21 @@ def gcx_submit(script, account=None, queue=None, walltime=None, depends_on=None,
         argv += list(POLICY.get("submit_extra", []))
         res = _run(argv + [path], cwd=os.path.dirname(path))
         if res["rc"] == 0:
-            res["job_id"] = res["stdout"].strip().split(";")[0]
+            res["job_id"] = _job_id(res["stdout"], slurm)
         return res
     return _guard(go)
+
+
+def _job_id(stdout, slurm):
+    """The last line that looks like a job id: site submit filters may print
+    banners to stdout first (TACC prints a welcome banner and an env dump)."""
+    for line in reversed(stdout.strip().splitlines()):
+        line = line.strip()
+        if slurm:
+            line = line.split(";")[0]  # sbatch --parsable: id[;cluster]
+        if (SLURM_ID if slurm else PBS_ID).match(line):
+            return line
+    return None
 
 
 def gcx_cancel(job_ids):

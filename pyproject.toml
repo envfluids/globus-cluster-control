@@ -8,7 +8,6 @@ dependencies = ["globus-compute-sdk==4.17.1"]
 
 [project.scripts]
 gcx = "gcx.cli:main"
-gc = "gcx.cli:legacy_main"  # pilot name; drop before handing off (clashes with Graphviz's gc)
 
 [dependency-groups]
 dev = ["pytest"]
