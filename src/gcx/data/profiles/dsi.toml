@@ -1,0 +1,21 @@
+# UChicago DSI cluster. Set up with gcx and verified 2026-10-01 (docs/clusters.md).
+
+name = "dsi"
+description = "UChicago DSI cluster"
+ssh_host = "login.ds.uchicago.edu"   # load balancer; fe01/fe02 refuse direct SSH since 2026-06-08
+ssh_persist = "24h"
+scheduler = "slurm"
+verified = "2026-10-01"
+login_nodes = []   # fe01/fe02 sit behind the load balancer: single-node keepalive
+
+# The DSI collection is group storage rooted at /net/monsoon, not home, so
+# `gcx status` is unavailable here (gcx doctor still works).
+transfer_collection = ""
+
+read_roots = ["~", "/net/scratch/$USER"]
+script_roots = ["~", "/net/scratch/$USER"]
+notes = "SSH key only, no Duo. No module system. Slurm binaries in /usr/bin. Python 3.12 on the login node."
+
+[test_job]
+queue = "general"
+resources = ["--ntasks=1", "--cpus-per-task=1", "--mem=1G", "--time=00:02:00"]

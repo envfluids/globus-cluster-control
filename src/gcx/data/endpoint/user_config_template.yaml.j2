@@ -1,0 +1,16 @@
+{#- gcx: login-node command broker for job control. Installed by `gcx setup`.
+    Tasks run as threads in the user endpoint process on the login node, in the
+    venv the endpoint was installed in. No task-time package installs, no
+    user-supplied worker_init (user_config_schema.json rejects every user
+    variable). -#}
+idle_heartbeats_soft: 10
+idle_heartbeats_hard: 5760
+
+engine:
+  type: ThreadPoolEngine
+  max_workers: @MAX_WORKERS@   # filled in by gcx setup (profile: max_workers)
+  # gcx registers functions as source text and sends arguments as JSON; refuse
+  # anything else, so no task can make the endpoint unpickle (run) a payload.
+  allowed_serializers:
+    - globus_compute_sdk.serialize.PureSourceTextInspect
+    - globus_compute_sdk.serialize.JSONData

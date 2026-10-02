@@ -1,4 +1,4 @@
-"""`submit` must retry a provably-unsent request and must not retry one that
+"""`run_at_most_once` must retry a provably-unsent request and must not retry one that
 may have been delivered. Uses a stand-in Client whose `run` raises real,
 socket-produced Globus errors (see test_never_sent.py), so no network or
 Globus account is involved.
@@ -11,7 +11,7 @@ import pytest
 import requests
 from globus_sdk.exc import convert_request_exception
 
-from globus_cluster_control import cli
+from gcx import transport
 from test_never_sent import _failure, _free_port, _read_then, _server
 
 
@@ -47,7 +47,7 @@ class FakeClient:
 
 @pytest.fixture(autouse=True)
 def no_sleep(monkeypatch):
-    monkeypatch.setattr(cli.time, "sleep", lambda s: None)
+    monkeypatch.setattr(transport.time, "sleep", lambda s: None)
 
 
 def refused():
@@ -61,26 +61,59 @@ def reset_after_request():
 
 def test_unsent_failures_are_retried_until_success():
     c = FakeClient([refused(), refused()])
-    assert cli.submit(c, "ep", "sbatch x", 60) == "task-id"
+    assert transport.run_at_most_once(c, "ep", "fid", cmd="sbatch x") == "task-id"
     assert c.run_calls == 3
     assert c.max_retries_during_run == [0, 0, 0]  # SDK's own retries were off
 
 
 def test_possibly_delivered_failure_is_not_retried():
     c = FakeClient([reset_after_request()])
-    with pytest.raises(cli.AmbiguousSubmission):
-        cli.submit(c, "ep", "sbatch x", 60)
+    with pytest.raises(transport.AmbiguousSubmission):
+        transport.run_at_most_once(c, "ep", "fid", cmd="sbatch x")
     assert c.run_calls == 1
 
 
 def test_unsent_then_ambiguous_stops_at_the_ambiguous_one():
     c = FakeClient([refused(), reset_after_request(), refused()])
-    with pytest.raises(cli.AmbiguousSubmission):
-        cli.submit(c, "ep", "sbatch x", 60)
+    with pytest.raises(transport.AmbiguousSubmission):
+        transport.run_at_most_once(c, "ep", "fid", cmd="sbatch x")
     assert c.run_calls == 2
 
 
 def test_sdk_retries_restored_after_submit():
     c = FakeClient([])
-    cli.submit(c, "ep", "hostname", 60)
+    transport.run_at_most_once(c, "ep", "fid", cmd="hostname")
     assert c._cfg.max_retries == 5
+
+
+def test_wait_returns_endpoint_failure_instead_of_raising():
+    from globus_compute_sdk.errors import TaskExecutionFailed
+
+    class C:
+        def get_task(self, task_id):
+            raise TaskExecutionFailed("Data serializer DillDataBase64 disabled")
+
+    task = transport.wait(C(), "t")
+    assert "DillDataBase64 disabled" in task["exception"] and not task["pending"]
+
+
+TACC_STDOUT = """
+-----------------------------------------------------------------
+          Welcome to the Stampede3 Supercomputer
+-----------------------------------------------------------------
+--> Array tasks is null... Dumping env
+SLURM_TACC_NODES=1
+No reservation for this job
+--> Verifying valid submit host (login4)...OK
+--> Verifying valid ssh keys...OK
+3557959
+"""
+
+
+def test_job_id_found_after_a_site_banner():
+    # Stampede3, 2026-10-02: TACC's submit filter prints all of this to stdout.
+    from gcx.cli import job_id_of
+    assert job_id_of({"stdout": TACC_STDOUT}, "slurm") == "3557959"
+    assert job_id_of({"stdout": "4242;midway3\n"}, "slurm") == "4242"
+    assert job_id_of({"stdout": "4242.polaris-pbs-01\n"}, "pbs") == "4242.polaris-pbs-01"
+    assert job_id_of({"stdout": "no id here\n"}, "slurm") is None

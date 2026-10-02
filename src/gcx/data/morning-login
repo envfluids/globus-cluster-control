@@ -1,0 +1,248 @@
+#!/usr/bin/env bash
+# gcx login (bundled morning-login) -- establish one ControlMaster connection
+# per cluster so later ssh (and `gcx setup`) never prompts. Run once a day; you
+# answer MFA/Duo per cluster, after that every ssh/scp/rsync reuses the socket.
+#
+# Usage:  gcx login [--refresh|--close] [--yes] [cluster ...]
+#   No args     -> every cluster in $GCX_CLUSTERS (gcx passes your configured ones).
+#   --refresh   -> tear each master down and build a fresh one (after a network
+#     (-r)         change, a long sleep, or when a socket is wedged).
+#   --close     -> tear the masters down and stop.
+#   --yes (-y)  -> do not ask before refreshing a single-use-MFA cluster.
+#
+# Single-use MFA ($GCX_SINGLE_USE_MFA, e.g. ALCF Polaris): each login costs a
+# token, so its master persists until closed, and a sweep that did not name the
+# cluster asks before tearing it down. Naming it (`gcx login -r polaris`) or
+# --yes skips the question.
+#
+# Adapted from physicsnemo/hpc/agent-toolkit/bin/morning-login.
+
+set -euo pipefail
+read -r -a CLUSTERS <<< "${GCX_CLUSTERS:-}"
+read -r -a SINGLE_USE <<< "${GCX_SINGLE_USE_MFA:-}"
+
+REFRESH=0       # close each target's master before connecting
+CLOSE_ONLY=0    # ... and don't reconnect
+ASSUME_YES=0    # don't prompt before spending a single-use MFA token
+named=()        # targets the user asked for by name, if any
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -r|--refresh) REFRESH=1 ;;
+        --close)      REFRESH=1; CLOSE_ONLY=1 ;;
+        -y|--yes)     ASSUME_YES=1 ;;
+        -h|--help)    awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next}
+                           NR>1 {exit}' "$0"; exit 0 ;;
+        -*)           echo "gcx login: unknown option '$1' (try --help)" >&2
+                      exit 2 ;;
+        *)            named=(${named[@]+"${named[@]}"} "$1") ;;
+    esac
+    shift
+done
+
+if [ ${#named[@]} -gt 0 ]; then
+    targets=("${named[@]}")
+elif [ ${#CLUSTERS[@]} -gt 0 ]; then
+    targets=("${CLUSTERS[@]}")
+else
+    echo "gcx login: no clusters configured; name one (gcx login midway3)" >&2
+    exit 2
+fi
+
+mkdir -p ~/.ssh/controlmasters
+
+# ── Never freeze on a wedged login node ──────────────────────────────────────
+# A multi-node login alias (delta round-robins over 4 addresses, dtai over 3)
+# can hand out a node whose sshd accepts the TCP connection but never sends its
+# SSH banner — usually because that node's shared filesystem is hung. With the
+# default `ConnectTimeout none`, ssh then waits FOREVER and morning-login
+# appears to freeze. Diagnosed 2026-09-15: 141.142.140.195 was wedged while
+# .194/.196/.205 were healthy, so the freeze was a ~1-in-4 coin flip.
+#
+# ConnectTimeout only bounds the connect + banner phase, NOT the MFA prompt, so
+# a human taking their time at Duo is never cut off.
+SSH_CONNECT_TIMEOUT="${SSH_CONNECT_TIMEOUT:-15}"
+SSH_CONNECT_TRIES="${SSH_CONNECT_TRIES:-3}"
+
+cfg_for() {  # cfg_for <alias> <keyword>  -> ssh's own resolved value
+    ssh -G "$1" 2>/dev/null | awk -v k="$2" '$1==k {print $2; exit}'
+}
+
+# Is one address healthy? Probe with ssh itself, not nc: macOS nc's -w does NOT
+# reliably bound a socket that connected but stays silent (measured — a `nc -w 5`
+# against the wedged node was still alive after 60 s), whereas ssh's
+# ConnectTimeout demonstrably fires on exactly this case ("Connection timed out
+# during banner exchange"). Probing through ssh also exercises the real code path.
+# BatchMode means a healthy node fails fast at auth, which is the success signal.
+addr_is_healthy() {
+    local c="$1" hn="$2" ip="$3" out
+    out=$(ssh -o BatchMode=yes -o "ConnectTimeout=6" \
+              -o ControlMaster=no -o ControlPath=none \
+              -o "HostName=$ip" -o "HostKeyAlias=$hn" \
+              "$c" true 2>&1)
+    case "$out" in
+        *"banner exchange"*|*"Operation timed out"*|*"Connection timed out"*) return 1 ;;
+        *) return 0 ;;   # reached auth (or succeeded) => sshd is alive
+    esac
+}
+
+addrs_of() {   # IPv4 addresses behind a name: dig, else getent (Linux), else host
+    if command -v dig >/dev/null 2>&1; then
+        dig +short "$1" 2>/dev/null
+    elif command -v getent >/dev/null 2>&1; then
+        getent ahostsv4 "$1" 2>/dev/null | awk '{print $1}' | sort -u
+    else
+        host "$1" 2>/dev/null | awk '/has address/ {print $NF}'
+    fi | grep -E '^[0-9.]+$'
+}
+
+# First address behind <hostname> whose sshd actually answers.
+first_live_addr() {
+    local c="$1" hn="$2" ip
+    for ip in $(addrs_of "$hn"); do
+        if addr_is_healthy "$c" "$hn" "$ip"; then printf '%s\n' "$ip"; return 0; fi
+    done
+    return 1
+}
+
+# Report which addresses behind an alias are wedged, for the failure message.
+report_nodes() {
+    local c="$1" hn="$2" ip
+    for ip in $(addrs_of "$hn"); do
+        if addr_is_healthy "$c" "$hn" "$ip"; then echo "        $ip  healthy"
+        else echo "        $ip  WEDGED (accepts TCP, sshd never sends its banner)"; fi
+    done
+}
+
+connect_master() {
+    local c="$1" hn ctl ip first i
+    hn=$(cfg_for "$c" hostname)
+    ctl=$(cfg_for "$c" controlpath)
+    local -a base=(-fNM -o "ConnectTimeout=$SSH_CONNECT_TIMEOUT")
+    local -a pin=()
+
+    # Pre-flight the address ssh is most likely to pick. Silent and ~0.2 s when
+    # healthy, ~6 s when wedged. The REAL attempt below is never output-captured,
+    # because the Duo/password prompt has to reach the terminal.
+    if [ -n "$hn" ]; then
+        first=$(addrs_of "$hn" | head -1)
+        if [ -n "$first" ] && ! addr_is_healthy "$c" "$hn" "$first"; then
+            echo "    ! $first is wedged (accepts TCP, no SSH banner)"
+            if ip=$(first_live_addr "$c" "$hn"); then
+                echo "    → pinning healthy node $ip"
+                pin=(-o "HostName=$ip" -o "HostKeyAlias=$hn" -o "ControlPath=$ctl")
+            else
+                echo "    ! every login node behind $hn is wedged — nothing to connect to:"
+                report_nodes "$c" "$hn"
+                return 1
+            fi
+        fi
+    fi
+
+    for ((i = 1; i <= SSH_CONNECT_TRIES; i++)); do
+        if ssh "${base[@]}" ${pin[@]+"${pin[@]}"} "$c"; then return 0; fi
+        [ "$i" -ge "$SSH_CONNECT_TRIES" ] && break
+        # getaddrinfo may hand ssh a different address than we probed, so if an
+        # unpinned attempt failed, pin a known-live node before trying again.
+        if [ ${#pin[@]} -eq 0 ] && [ -n "$hn" ] && ip=$(first_live_addr "$c" "$hn"); then
+            echo "    … attempt $i failed; pinning healthy node $ip and retrying"
+            pin=(-o "HostName=$ip" -o "HostKeyAlias=$hn" -o "ControlPath=$ctl")
+        else
+            echo "    … attempt $i failed; retrying"
+        fi
+        sleep 2
+    done
+    [ -n "$hn" ] && { echo "    node health for $hn:"; report_nodes "$c" "$hn"; }
+    return 1
+}
+
+# ── Tearing a master down (--refresh / --close) ───────────────────────────
+# `ssh -O exit` asks a live master to shut down, and it unlinks its own socket on
+# the way out. A master that died WITHOUT cleaning up — laptop slept, login node
+# rebooted, process killed — leaves the socket file behind. ssh will not reuse a
+# dead socket, but it will not remove it either, so it just sits there and every
+# later connection pays a failed-connect detour. Clearing those is half the point
+# of --refresh, so close_master removes the file itself rather than trusting
+# `-O exit` to have done it.
+close_master() {
+    local c="$1" ctl
+    ctl=$(cfg_for "$c" controlpath)   # ssh -G hands back %r/%h/%p already expanded
+
+    if ssh -O check "$c" &>/dev/null; then
+        if ssh -O exit "$c" &>/dev/null; then
+            echo "    → master closed"
+        else
+            echo "    ! 'ssh -O exit' refused; falling back to removing the socket"
+        fi
+    elif [ -n "$ctl" ] && [ "$ctl" != "none" ] && [ -S "$ctl" ]; then
+        echo "    ! stale socket with no master behind it"
+    else
+        echo "    → nothing to close"
+        return 0
+    fi
+
+    if [ -n "$ctl" ] && [ "$ctl" != "none" ] && [ -S "$ctl" ]; then
+        rm -f "$ctl" && echo "    → socket removed"
+    fi
+}
+
+# Single-use-MFA clusters the user named on the command line: they meant it, so
+# we don't second-guess a token they chose to spend.
+is_single_use() {
+    local x
+    for x in ${SINGLE_USE[@]+"${SINGLE_USE[@]}"}; do [ "$x" = "$1" ] && return 0; done
+    return 1
+}
+was_named() {
+    local x
+    for x in ${named[@]+"${named[@]}"}; do [ "$x" = "$1" ] && return 0; done
+    return 1
+}
+
+# Should we actually tear down this alias's master?
+refresh_ok() {
+    local c="$1" ans
+    is_single_use "$c" || return 0
+    was_named "$c" && return 0
+    [ $ASSUME_YES -eq 1 ] && return 0
+    if [ ! -t 0 ]; then
+        echo "    ~ skipped: refreshing $c costs a single-use MFA token, and this is"
+        echo "      not a terminal, so there is nobody to ask. Pass --yes to force it."
+        return 1
+    fi
+    printf "    ? refreshing %s spends a single-use MFA token. Refresh? [y/N] " "$c"
+    read -r ans
+    case "$ans" in
+        [yY]*) return 0 ;;
+        *)     echo "    ~ leaving the $c master up"; return 1 ;;
+    esac
+}
+
+for c in "${targets[@]}"; do
+    if [ $REFRESH -eq 1 ]; then
+        printf "[↻] %s — refreshing\n" "$c"
+        if refresh_ok "$c"; then
+            close_master "$c"
+        fi
+    fi
+    if [ $CLOSE_ONLY -eq 1 ]; then
+        continue
+    fi
+
+    if ssh -O check "$c" &>/dev/null; then
+        echo "[✓] $c — already connected"
+    else
+        printf "[…] %s — connecting\n" "$c"
+        # -fNM: background after auth (-f), no remote command (-N), master (-M).
+        # For MFA/DUO clusters the prompt fires before -f backgrounds the process.
+        # connect_master adds a connect/banner timeout, retries, and falls back
+        # to pinning a login node that actually answers.
+        if connect_master "$c"; then
+            echo "    → OK"
+        else
+            echo "    → FAILED (check hostname / credentials, or the node health above)"
+        fi
+    fi
+done
+
+echo "Done."

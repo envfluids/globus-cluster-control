@@ -1,0 +1,22 @@
+# NCSA DeltaAI (GH200, aarch64). Set up with gcx and verified 2026-10-02 (docs/clusters.md).
+
+name = "deltaai"
+description = "NCSA DeltaAI"
+ssh_host = "dtai-login.delta.ncsa.illinois.edu"   # documented login.deltaai... has no DNS record
+ssh_persist = "24h"
+scheduler = "slurm"
+verified = "2026-10-02"
+login_nodes = []   # cron disabled like Delta: keepalive "on-use"
+
+# DeltaAI's home is separate from Delta's, and no collection is known to
+# expose it, so `gcx status` is unavailable here (gcx doctor still works).
+transfer_collection = ""
+
+read_roots = ["~"]
+script_roots = ["~"]
+notes = "aarch64 login nodes: uv's Python 3.12 and the endpoint wheels install fine (2026-10-02). Every job must request a GPU."
+
+# DeltaAI rejects jobs that request no GPU (found by the first setup, 2026-10-02).
+[test_job]
+queue = "ghx4-interactive"
+resources = ["--ntasks=1", "--cpus-per-task=1", "--mem=4G", "--gpus-per-node=1", "--time=00:02:00"]

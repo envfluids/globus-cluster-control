@@ -1,0 +1,45 @@
+# TACC Stampede3. Set up with gcx and verified 2026-10-02 (docs/clusters.md).
+
+name = "stampede3"
+description = "TACC Stampede3"
+ssh_host = "stampede3.tacc.utexas.edu"
+ssh_persist = "24h"
+scheduler = "slurm"
+verified = "2026-10-02"
+# Public per-node names (probed 2026-10-02); the round-robin covers login1-4.
+login_nodes = [
+  "login1.stampede3.tacc.utexas.edu",
+  "login2.stampede3.tacc.utexas.edu",
+  "login3.stampede3.tacc.utexas.edu",
+  "login4.stampede3.tacc.utexas.edu",
+]
+
+transfer_collection = "1e9ddd41-fe4b-406f-95ff-f3d79f9cb523"   # home mapped at /~/
+transfer_home = "/~/"
+
+# Slurm stores accounts in lowercase, but TACC's submit filter only accepts the
+# project name as taccinfo prints it (TG-ATM170020): "Unknown project
+# tg-atm170020". Setup upper-cases the probed accounts here.
+accounts_upper = true
+
+# TACC's submit filter aborts without the login shell's storage variables
+# ("Unable to query WORK2 environment variable"); the endpoint worker does not
+# start from a login shell, so setup copies them into its environment.
+worker_env = ["WORK", "WORK2", "SCRATCH", "STOCKYARD", "STOCKYARD2", "ARCHIVE",
+              "TACC_SYSTEM", "TACC_DOMAIN"]
+
+read_roots = ["~", "$WORK", "$SCRATCH"]
+script_roots = ["~", "$WORK", "$SCRATCH"]
+notes = "Login nodes cap each process at 8 GB virtual memory (ulimit -v): uv must be throttled. $HOME quota is 14 GB, so uv's cache goes to $SCRATCH. Cron is allowed (2026-10-02); TACC publishes no rule on long-running login processes."
+
+# The 8 GB per-process cap makes parallel uv installs fail.
+[uv_env]
+UV_CONCURRENT_DOWNLOADS = "1"
+UV_CONCURRENT_INSTALLS = "1"
+UV_CONCURRENT_BUILDS = "1"
+# $HOME is a 14 GB quota (85% full when first probed); keep uv's cache off it.
+UV_CACHE_DIR = "$SCRATCH/.uv-cache"
+
+[test_job]
+queue = "spr"
+resources = ["-N 1", "-n 1", "-t 00:02:00"]   # TACC requires node/task counts and a time

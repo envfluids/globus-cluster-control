@@ -1,0 +1,25 @@
+# NCAR Derecho (being retired). Set up with gcx and verified 2026-10-02 (docs/clusters.md).
+
+name = "derecho"
+description = "NCAR Derecho"
+ssh_host = "derecho.hpc.ucar.edu"
+ssh_persist = "24h"
+scheduler = "pbs"
+verified = "2026-10-02"
+# derecho1-8 have public names, but cron is denied (PAM), so: keepalive "on-use".
+login_nodes = []
+
+# NCAR projects are Unix groups (uchi0014); qsub wants them upper case.
+accounts_from_groups = "[a-z]{4}[0-9]{4}"
+accounts_upper = true
+
+transfer_collection = "d33b3614-6d04-11e5-ba46-22000b92c6ec"   # home mapped at /~/
+transfer_home = "/~/"
+
+read_roots = ["~", "/glade/work/$USER", "/glade/derecho/scratch/$USER"]
+script_roots = ["~", "/glade/work/$USER"]
+notes = "PBS Pro; every job needs a project (-A). Submit to the routing queues main and develop (they route to cpu/gpu and cpudev/gpudev). Being retired."
+
+[test_job]
+queue = "develop"
+resources = ["-l select=1:ncpus=1", "-l walltime=00:02:00"]

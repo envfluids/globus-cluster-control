@@ -1,0 +1,282 @@
+"""Setup's decisions for clusters Midway3 cannot exercise: fresh installs,
+no cron, single nodes, PBS. No SSH: a stub Remote with a known home."""
+
+import pytest
+
+from gcx import profiles
+from gcx.capabilities import build
+from gcx.setup import menu, steps
+from gcx.setup.remote import Remote, RemoteError
+
+FACTS = {"host": "midway3-login4", "user": "alice", "home": "/home/alice", "cron": "ok",
+         "scheduler": "slurm", "sched_bin": "/opt/slurm/bin",
+         "accounts": "pi-a,pi-b", "net_api_443": "ok", "net_amqps_5671": "ok"}
+
+
+def ctx(cfg=None, facts=None, prof=None, yes=True):
+    c = steps.Ctx("midway3", prof or profiles.load("midway3"), dict(cfg or {}),
+                  Remote("midway3", home="/home/alice"), menu.Prompter(yes))
+    c.facts = dict(FACTS, **(facts or {}))
+    return c
+
+
+def test_profile_loads_and_lists():
+    p = profiles.load("midway3")
+    assert p["scheduler"] == "slurm" and "midway3" in profiles.available()
+    with pytest.raises(profiles.UnknownCluster):
+        profiles.load("nowhere")
+
+
+def test_fresh_install_defaults_to_dot_gcx():
+    c = ctx()
+    assert (c.root, c.ep) == ("~/.gcx", "gcx")
+    assert c.gce == "/home/alice/.gcx/venv/bin/globus-compute-endpoint"
+
+
+def test_yes_policy_defaults_keep_shell_off_and_allow_test_dir(capsys):
+    c = ctx()
+    pol = menu.build_policy("midway3", c.prof, c.facts, c.root, c.ask)
+    assert pol["capabilities"] == ["status", "submit", "read"]
+    assert pol["accounts"] == ["pi-a", "pi-b"] and pol["queues"] == ["caslake"]
+    assert "~/.gcx/test" not in pol["read_roots"]  # already covered by ~
+    build.validate(pol)
+
+
+def test_test_dir_added_when_roots_do_not_cover_it():
+    prof = dict(profiles.load("midway3"), read_roots=["/scratch/x"], script_roots=["/scratch/x"])
+    c = ctx(prof=prof)
+    pol = menu.build_policy("midway3", prof, c.facts, c.root, c.ask)
+    assert pol["read_roots"] == ["/scratch/x", "~/.gcx/test"]
+    assert pol["script_roots"] == ["/scratch/x", "~/.gcx/test"]
+
+
+@pytest.mark.parametrize("facts, mode", [
+    ({"cron": "denied"}, "on-use"),
+    ({"host": "midway3-login2"}, "single"),      # not a named login node
+    ({}, "failover"),                            # named node, cron ok
+])
+def test_keepalive_probe_then_degrade(facts, mode):
+    c = ctx(facts=facts)
+    ka = menu.choose_keepalive("midway3", c.prof, c.facts, c.ask)
+    assert ka["mode"] == mode
+    if mode == "failover":
+        assert ka["primary"] == "midway3-login4" and ka["backup"] != "midway3-login4"
+
+
+def test_single_node_profile_never_offers_failover():
+    prof = dict(profiles.load("midway3"), login_nodes=[])
+    c = ctx(prof=prof)
+    assert menu.choose_keepalive("midway3", prof, c.facts, c.ask) == \
+        {"mode": "single", "primary": "midway3-login4"}
+
+
+def test_keepalive_env_and_cron_line():
+    c = ctx({"keepalive": {"mode": "failover", "primary": "n4", "backup": "n3"},
+             "email": "a@b.edu"})
+    files = steps.keepalive_files(c)
+    assert list(files) == ["~/.gcx/keepalive.env", "~/.gcx/keepalive.sh"]  # settings first
+    env = files["~/.gcx/keepalive.env"]
+    assert "MODE=failover\nPRIMARY=n4\nBACKUP=n3\nEP=gcx\n" in env
+    assert "STATE=/home/alice/.gcx/state\n" in env
+    cmd = steps._cron_cmd(c, "backup")
+    assert "/home/alice/.gcx/keepalive.sh backup # gcx-keepalive midway3" in cmd
+    assert "grep -v 'gcx-keepalive midway3$'" in cmd  # replaces only its own line
+    assert "MAILTO=a@b.edu" in cmd
+
+
+def test_endpoint_files_fill_workers_and_path():
+    prof = dict(profiles.load("midway3"), max_workers=2)
+    files = steps.endpoint_files(ctx(prof=prof))
+    tmpl = files["~/.globus_compute/gcx/user_config_template.yaml.j2"]
+    assert "max_workers: 2 " in tmpl and "@MAX_WORKERS@" not in tmpl
+    assert "JSONData" in tmpl and "PureSourceTextInspect" in tmpl
+    env = files["~/.globus_compute/gcx/user_environment.yaml"]
+    assert "PATH: /home/alice/.gcx/venv/bin:/home/alice/.local/bin:/opt/slurm/bin:" in env
+
+
+def test_personal_config_and_transfer_state_path():
+    c = ctx(facts={"ep_id": "ep-1"})
+    p = steps.personal(c)
+    assert p["endpoint"] == "ep-1" and p["remote_state"] == "~/.gcx/state"
+    assert p["state"] == "2fde89c0-6fb4-11eb-8c47-0eb1aa8d4337:/~/.gcx/state/"
+
+
+def test_probe_blocks_unreachable_globus(monkeypatch):
+    c = ctx()
+    monkeypatch.setattr(c, "probe", lambda: None)
+    c.facts.update(net_amqps_5671="blocked", net_amqps_443="blocked")
+    assert steps.s_probe(c).status == steps.BLOCKED
+    c.facts.update(net_amqps_443="ok")
+    assert steps.s_probe(c).status == steps.OK
+    c.facts.update(scheduler="pbs")
+    assert steps.s_probe(c).status == steps.BLOCKED
+
+
+def test_cron_step_targets_the_right_node():
+    cfg = {"keepalive": {"mode": "failover", "primary": "midway3-login4",
+                         "backup": "midway3-login3"}}
+    c = ctx(cfg, facts={"heartbeats": "midway3-login4:30"})
+    r = steps.s_cron(c)
+    assert r.status == steps.HUMAN and "backup" in r.detail and "midway3-login3" in r.detail
+    c.facts["heartbeats"] = "midway3-login4:30,midway3-login3:31"
+    assert steps.s_cron(c).status == steps.OK
+    c.facts["heartbeats"] = "midway3-login3:31"  # primary (this node) missing
+    assert steps.s_cron(c).status == steps.CHANGE
+
+
+def test_unsafe_root_refused():
+    with pytest.raises(RemoteError):
+        Remote("x").probe("~/a; rm -rf ~", "gcx")
+    with pytest.raises(RemoteError):
+        Remote("x").probe("/etc", "gcx")
+
+
+def test_login_shell_variables_resolved_into_paths(capsys):
+    facts = {"env_WORK": "/work2/09979/alice/stampede3", "env_SCRATCH": ""}
+    roots = menu.resolve_roots(["~", "$WORK", "$WORK/runs/", "$SCRATCH", "/scratch/$USER"], facts)
+    assert roots == ["~", "/work2/09979/alice/stampede3", "/work2/09979/alice/stampede3/runs",
+                     "/scratch/$USER"]
+    assert "dropping $SCRATCH" in capsys.readouterr().out
+
+
+def typed(monkeypatch, *answers):
+    """Feed answers to input(), in order; fail if the menu asks for more."""
+    it = iter(answers)
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(it))
+
+
+def test_typed_directory_is_added_to_defaults_not_replacing_them(monkeypatch):
+    # The DSI case: typing one extra path used to drop ~ and scratch.
+    typed(monkeypatch, "/net/monsoon", "")  # add, then Enter at "Use this?"
+    got = menu.Prompter().extend_list("Directories gcx may read under", ["~", "/net/scratch/$USER"])
+    assert got == ["~", "/net/scratch/$USER", "/net/monsoon"]
+
+
+def test_minus_removes_a_default_and_duplicates_are_ignored(monkeypatch):
+    typed(monkeypatch, "-~, /net/monsoon, /net/scratch/$USER", "y")
+    got = menu.Prompter().extend_list("Dirs", ["~", "/net/scratch/$USER"])
+    assert got == ["/net/scratch/$USER", "/net/monsoon"]
+
+
+def test_enter_keeps_defaults(monkeypatch):
+    typed(monkeypatch, "", "")
+    assert menu.Prompter().extend_list("Dirs", ["~"]) == ["~"]
+
+
+def test_rejecting_the_final_list_asks_again(monkeypatch):
+    typed(monkeypatch, "/wrong", "n", "/right", "y")
+    assert menu.Prompter().extend_list("Dirs", ["~"]) == ["~", "/right"]
+
+
+def test_accounts_still_replace_but_are_confirmed(monkeypatch):
+    typed(monkeypatch, "pi-b", "n", "pi-a, pi-b", "")
+    assert menu.Prompter().choose_list("Accounts", ["pi-a", "pi-b", "pi-c"]) == ["pi-a", "pi-b"]
+
+
+def test_full_menu_with_typed_answers(monkeypatch):
+    # submit? read? shell? | read dirs: add, confirm | script dirs: Enter, confirm
+    # | accounts: Enter, confirm | queues: Enter, confirm | qos: Enter, confirm
+    typed(monkeypatch, "y", "y", "n", "/net/monsoon", "", "", "", "", "", "", "", "", "")
+    c = ctx()
+    pol = menu.build_policy("midway3", c.prof, c.facts, c.root, menu.Prompter())
+    assert pol["read_roots"] == ["~", "/scratch/midway3/$USER", "/net/monsoon"]
+    assert pol["script_roots"] == ["~", "/scratch/midway3/$USER"]
+    assert pol["capabilities"] == ["status", "submit", "read"]
+
+
+def test_cron_denied_and_on_use_declined_gives_none(monkeypatch):
+    typed(monkeypatch, "n")
+    c = ctx(facts={"cron": "denied"})
+    assert menu.choose_keepalive("delta", c.prof, c.facts, menu.Prompter()) == {"mode": "none"}
+
+
+def test_on_use_cluster_skips_cron_steps():
+    c = ctx({"keepalive": {"mode": "on-use"}})
+    assert steps.s_keepalive_files(c).status == steps.OK
+    r = steps.s_cron(c)
+    assert r.status == steps.OK and "restarts the endpoint over SSH" in r.detail
+
+
+def test_yes_typed_at_add_directories_is_rejected_and_reasked(monkeypatch, capsys):
+    # Stampede3, 2026-10-02: "y" was saved as a script directory.
+    typed(monkeypatch, "y", "", "")
+    assert menu.Prompter().extend_list("Dirs", ["~"]) == ["~"]
+    assert 'looks like an answer to "Use this?"' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("bad", ["relative/dir", "/", "x y"])
+def test_non_paths_rejected(monkeypatch, bad):
+    typed(monkeypatch, bad, "/ok", "")
+    assert menu.Prompter().extend_list("Dirs", ["~"]) == ["~", "/ok"]
+
+
+def test_qos_none_means_empty(monkeypatch):
+    typed(monkeypatch, "none", "")
+    assert menu.Prompter().choose_list("QoS values", []) == []
+
+
+def test_invalid_saved_policy_sends_setup_back_to_the_menu():
+    c = ctx({"policy": {"scheduler": "slurm", "capabilities": ["status", "submit"],
+                        "script_roots": ["~", "y"]}})
+    r = steps.s_policy(c)
+    assert r.status == steps.HUMAN and "invalid" in r.detail and "'y'" in r.detail
+
+
+def test_account_spelling_follows_policy(monkeypatch):
+    from gcx import cli, config
+    monkeypatch.setattr(config, "load", lambda c: {"policy": {"scheduler": "slurm",
+                                                              "accounts": ["tg-atm170020"]}})
+    assert cli._account_spelling("stampede3", "TG-ATM170020") == "tg-atm170020"
+    assert cli._account_spelling("stampede3", "other") == "other"
+
+
+def test_tacc_accounts_offered_in_upper_case_without_default(monkeypatch):
+    # Stampede3, 2026-10-02: "default" is not a real account, and TACC's submit
+    # filter rejects the lower-case project name Slurm reports.
+    prof = dict(profiles.load("stampede3"))
+    assert prof["accounts_upper"]
+    c = ctx(prof=prof, facts={"accounts": "default,tg-atm170020"})
+    pol = menu.build_policy("stampede3", prof, c.facts, c.root, c.ask)
+    assert pol["accounts"] == ["TG-ATM170020"]
+
+
+def test_worker_env_copied_from_login_shell():
+    prof = dict(profiles.load("stampede3"))
+    c = ctx(prof=prof, facts={"env_WORK2": "/work2/1/alice/stampede3", "env_STOCKYARD": "/work2/1/alice"})
+    env = steps.endpoint_files(c)["~/.globus_compute/gcx/user_environment.yaml"]
+    assert "WORK2: /work2/1/alice/stampede3\n" in env and "STOCKYARD: /work2/1/alice\n" in env
+    assert "ARCHIVE" not in env  # unset on the cluster: left out
+
+
+def test_unsafe_env_var_names_refused():
+    with pytest.raises(RemoteError):
+        Remote("x").probe("~/.gcx", "gcx", env_vars=["WORK; rm -rf ~"])
+
+
+def test_pbs_job_completion_and_ncar_projects():
+    assert steps.done("Job Id: 1.desched1\n    job_state = F\n    Exit_status = 0\n", "pbs")
+    assert not steps.done("Job Id: 1.desched1\n    job_state = R\n", "pbs")
+    assert steps.done("123  test  cpu  COMPLETED", "slurm")
+    prof = dict(profiles.load("derecho"))
+    c = ctx(prof=prof, facts={"scheduler": "pbs", "accounts": "", "groups": "ncar,uchi0014,uchi0018,docker"})
+    pol = menu.build_policy("derecho", prof, c.facts, c.root, c.ask)
+    assert pol["accounts"] == ["UCHI0014", "UCHI0018"]
+
+
+def test_trailing_slash_is_not_a_new_directory(monkeypatch):
+    # Polaris, 2026-10-02: typing "~/" next to the default "~" saved "~" twice.
+    typed(monkeypatch, "~/, /eagle/proj/", "")
+    got = menu.Prompter().extend_list("Dirs", ["~"])
+    assert got == ["~", "/eagle/proj/"]
+    assert menu.resolve_roots(got + ["~/"], {}) == ["~", "/eagle/proj"]
+
+
+def test_menu_again_prefills_current_answers(monkeypatch):
+    cur = {"scheduler": "slurm", "capabilities": ["status", "read"],
+           "read_roots": ["~", "/net/monsoon"]}
+    # submit? (default now no) read? (yes) shell? (no) | read dirs: add one, confirm
+    typed(monkeypatch, "", "", "", "/net/scratch/$USER", "")
+    c = ctx()
+    pol = menu.build_policy("dsi", c.prof, c.facts, c.root, menu.Prompter(), current=cur)
+    assert pol["capabilities"] == ["status", "read"]
+    assert pol["read_roots"] == ["~", "/net/monsoon", "/net/scratch/$USER"]
