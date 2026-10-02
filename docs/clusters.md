@@ -195,5 +195,18 @@ bug, then three TACC-specific facts that only a real submission revealed.
     (the first one finished, but setup could not follow it, per item 5).
   - A CLI `submit` with the lowercase account printed job 3558038.
   - `gcx setup stampede3 --dry-run` reports nothing to change.
-- **Not yet done**: a live failover test, i.e. login4's cron disabled and
-  login1 taking over, as was done on Midway3.
+- **Failover test** (same method as on Midway3):
+
+  | Time | Event |
+  |---|---|
+  | 11:18:54 | login4's cron entry commented out and its endpoint stopped |
+  | 11:24:17 | login1 starts the endpoint (primary heartbeat 360 s old) |
+  | 11:24 | `doctor` passes against login1, allowlist included; `status` flags login4 STALE; the worker on login1 has `$WORK2` |
+  | 11:24:47 | login4's cron entry restored |
+  | 11:28:11 | login1 sees login4's fresh heartbeat and stops |
+  | 11:30:14 | login4 starts the endpoint again |
+
+  - Takeover took 5.5 minutes. Hand-back took 5.5 minutes, including
+    2 minutes with no endpoint.
+  - Afterwards one endpoint process runs on login4, and the dry run reports
+    nothing to change.
