@@ -195,3 +195,59 @@ def test_on_use_cluster_skips_cron_steps():
     assert steps.s_keepalive_files(c).status == steps.OK
     r = steps.s_cron(c)
     assert r.status == steps.OK and "restarts the endpoint over SSH" in r.detail
+
+
+def test_yes_typed_at_add_directories_is_rejected_and_reasked(monkeypatch, capsys):
+    # Stampede3, 2026-10-02: "y" was saved as a script directory.
+    typed(monkeypatch, "y", "", "")
+    assert menu.Prompter().extend_list("Dirs", ["~"]) == ["~"]
+    assert 'looks like an answer to "Use this?"' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("bad", ["relative/dir", "/", "x y"])
+def test_non_paths_rejected(monkeypatch, bad):
+    typed(monkeypatch, bad, "/ok", "")
+    assert menu.Prompter().extend_list("Dirs", ["~"]) == ["~", "/ok"]
+
+
+def test_qos_none_means_empty(monkeypatch):
+    typed(monkeypatch, "none", "")
+    assert menu.Prompter().choose_list("QoS values", []) == []
+
+
+def test_invalid_saved_policy_sends_setup_back_to_the_menu():
+    c = ctx({"policy": {"scheduler": "slurm", "capabilities": ["status", "submit"],
+                        "script_roots": ["~", "y"]}})
+    r = steps.s_policy(c)
+    assert r.status == steps.HUMAN and "invalid" in r.detail and "'y'" in r.detail
+
+
+def test_account_spelling_follows_policy(monkeypatch):
+    from gcx import cli, config
+    monkeypatch.setattr(config, "load", lambda c: {"policy": {"scheduler": "slurm",
+                                                              "accounts": ["tg-atm170020"]}})
+    assert cli._account_spelling("stampede3", "TG-ATM170020") == "tg-atm170020"
+    assert cli._account_spelling("stampede3", "other") == "other"
+
+
+def test_tacc_accounts_offered_in_upper_case_without_default(monkeypatch):
+    # Stampede3, 2026-10-02: "default" is not a real account, and TACC's submit
+    # filter rejects the lower-case project name Slurm reports.
+    prof = dict(profiles.load("stampede3"))
+    assert prof["accounts_upper"]
+    c = ctx(prof=prof, facts={"accounts": "default,tg-atm170020"})
+    pol = menu.build_policy("stampede3", prof, c.facts, c.root, c.ask)
+    assert pol["accounts"] == ["TG-ATM170020"]
+
+
+def test_worker_env_copied_from_login_shell():
+    prof = dict(profiles.load("stampede3"))
+    c = ctx(prof=prof, facts={"env_WORK2": "/work2/1/alice/stampede3", "env_STOCKYARD": "/work2/1/alice"})
+    env = steps.endpoint_files(c)["~/.globus_compute/gcx/user_environment.yaml"]
+    assert "WORK2: /work2/1/alice/stampede3\n" in env and "STOCKYARD: /work2/1/alice\n" in env
+    assert "ARCHIVE" not in env  # unset on the cluster: left out
+
+
+def test_unsafe_env_var_names_refused():
+    with pytest.raises(RemoteError):
+        Remote("x").probe("~/.gcx", "gcx", env_vars=["WORK; rm -rf ~"])

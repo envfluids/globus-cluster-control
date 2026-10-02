@@ -20,6 +20,10 @@ DEFAULTS = {
     "script_roots": ["~"],
     "uv_env": {},
     "mfa_single_use": False,
+    "accounts_upper": False,   # site submit filter wants upper-case project names
+    # Login-shell variables the site's tools need (TACC's submit filter reads $WORK2):
+    # their probed values are copied into the endpoint worker's environment.
+    "worker_env": [],
     "test_job": {},
     "notes": "",
 }

@@ -1,7 +1,7 @@
 # Sent by `gcx setup` as `ssh <alias> bash -s`. Read-only: prints key=value
 # lines (lists comma-separated) describing what this login node offers.
 # Must work in a minimal bash on any cluster; every probe tolerates failure.
-# GCX_ROOT and GCX_EP are prepended by the caller.
+# GCX_ROOT, GCX_EP and GCX_ENV_VARS (profile worker_env) are prepended by the caller.
 
 kv() { printf '%s=%s\n' "$1" "$2"; }
 first() { local p; p=$(command -v "$1" 2>/dev/null) && [ -n "$p" ] && echo "$p"; }
@@ -13,7 +13,7 @@ kv home "$HOME"
 kv shell_ulimit_v "$(ulimit -v 2>/dev/null)"
 # Site variables that only the login shell sets; the endpoint's worker does not
 # start from a login shell, so setup resolves them into literal paths.
-for v in WORK SCRATCH PROJECT; do kv "env_$v" "${!v}"; done
+for v in WORK SCRATCH PROJECT $GCX_ENV_VARS; do kv "env_$v" "${!v}"; done
 kv home_free_kb "$(df -Pk "$HOME" 2>/dev/null | awk 'NR==2{print $4}')"
 
 # Scheduler

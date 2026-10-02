@@ -95,3 +95,25 @@ def test_wait_returns_endpoint_failure_instead_of_raising():
 
     task = transport.wait(C(), "t")
     assert "DillDataBase64 disabled" in task["exception"] and not task["pending"]
+
+
+TACC_STDOUT = """
+-----------------------------------------------------------------
+          Welcome to the Stampede3 Supercomputer
+-----------------------------------------------------------------
+--> Array tasks is null... Dumping env
+SLURM_TACC_NODES=1
+No reservation for this job
+--> Verifying valid submit host (login4)...OK
+--> Verifying valid ssh keys...OK
+3557959
+"""
+
+
+def test_job_id_found_after_a_site_banner():
+    # Stampede3, 2026-10-02: TACC's submit filter prints all of this to stdout.
+    from gcx.cli import job_id_of
+    assert job_id_of({"stdout": TACC_STDOUT}, "slurm") == "3557959"
+    assert job_id_of({"stdout": "4242;midway3\n"}, "slurm") == "4242"
+    assert job_id_of({"stdout": "4242.polaris-pbs-01\n"}, "pbs") == "4242.polaris-pbs-01"
+    assert job_id_of({"stdout": "no id here\n"}, "slurm") is None

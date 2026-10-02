@@ -12,6 +12,7 @@ from importlib import resources
 
 SAFE_ROOT = re.compile(r"^~(/[\w.-]+)+$")   # install roots live under the cluster home
 SAFE_NAME = re.compile(r"^[\w.-]+$")
+SAFE_VAR = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
 
 class RemoteError(Exception):
@@ -64,12 +65,18 @@ class Remote:
         chmod = f" && chmod {mode} {tmp}" if mode else ""
         self.run(f"mkdir -p $(dirname {p}) && cat > {tmp}{chmod} && mv {tmp} {p}", stdin=text)
 
-    def probe(self, root, endpoint_name):
-        """Run probe.sh in one round trip; returns its key=value facts."""
+    def probe(self, root, endpoint_name, env_vars=()):
+        """Run probe.sh in one round trip; returns its key=value facts.
+
+        env_vars: login-shell variables whose values to report (env_<NAME>).
+        """
         if not SAFE_ROOT.match(root) or not SAFE_NAME.match(endpoint_name):
             raise RemoteError(f"unsafe install root {root!r} or endpoint name {endpoint_name!r}")
+        if not all(SAFE_VAR.match(v) for v in env_vars):
+            raise RemoteError(f"unsafe variable names {list(env_vars)!r}")
         script = resources.files("gcx.setup").joinpath("probe.sh").read_text()
-        head = f'GCX_ROOT="$HOME{root[1:]}"\nGCX_EP={endpoint_name}\n'
+        head = (f'GCX_ROOT="$HOME{root[1:]}"\nGCX_EP={endpoint_name}\n'
+                f'GCX_ENV_VARS="{" ".join(env_vars)}"\n')
         facts = {}
         for line in self.run("bash -s", stdin=head + script).splitlines():
             k, sep, v = line.partition("=")

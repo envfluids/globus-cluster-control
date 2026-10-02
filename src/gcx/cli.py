@@ -30,6 +30,7 @@ gcx exits 75 rather than risk running it twice; check `jobs` before retrying.
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import warnings
@@ -118,6 +119,36 @@ def _cluster_path(path):
     return path
 
 
+SLURM_JOB_LINE = re.compile(r"^(\d+(?:_\d+)?)(?:;\S+)?$")      # sbatch --parsable: id[;cluster]
+PBS_JOB_LINE = re.compile(r"^(\d+(?:\[\d*\])?(?:\.[\w.-]+)?)$")
+
+
+def job_id_of(res, scheduler):
+    """The job id from a gcx_submit result.
+
+    Site submit filters may print banners to stdout before sbatch's own line
+    (TACC prints a welcome banner and an env dump), so take the LAST line that
+    looks like a job id. TODO: move into capabilities/runtime.py at the next
+    change that re-registers functions anyway.
+    """
+    pat = SLURM_JOB_LINE if scheduler == "slurm" else PBS_JOB_LINE
+    for line in reversed(res.get("stdout", "").strip().splitlines()):
+        m = pat.match(line.strip())
+        if m:
+            return m.group(1)
+    return None
+
+
+def _account_spelling(cluster, account):
+    """Slurm account names are case-insensitive: use the policy's spelling."""
+    pol = config.load(cluster).get("policy", {})
+    if pol.get("scheduler") == "slurm":
+        for allowed in pol.get("accounts", []):
+            if allowed.lower() == account.lower():
+                return allowed
+    return account
+
+
 def _client():
     # JSON for arguments, so the endpoint never unpickles anything we send.
     return retry(Client, data_serialization_strategy=JSONData())
@@ -130,7 +161,7 @@ def _human(n):
         n /= 1024
 
 
-def render(verb, res, as_json):
+def render(verb, res, as_json, scheduler="slurm"):
     """Print a task result; return the exit code."""
     if not isinstance(res, dict):  # pilot ShellFunction result
         sys.stdout.write(res.stdout)
@@ -151,10 +182,12 @@ def render(verb, res, as_json):
         if res.get("truncated"):
             print("[gcx] listing truncated", file=sys.stderr)
         return 0
-    if verb == "submit" and res.get("job_id"):
-        print(res["job_id"])
-        sys.stderr.write(res.get("stderr", ""))
-        return 0
+    if verb == "submit" and res.get("rc") == 0:
+        job = job_id_of(res, scheduler)
+        if job:
+            print(job)
+            sys.stderr.write(res.get("stderr", ""))
+            return 0
     sys.stdout.write(res.get("stdout", ""))
     sys.stderr.write(res.get("stderr", ""))
     if res.get("truncated"):
@@ -222,7 +255,8 @@ def call(cluster, verb, kwargs, as_json=False, no_wait=False):
     if no_wait:
         print(res)
         return 0
-    return render(verb, res, as_json)
+    sched = config.load(cluster).get("policy", {}).get("scheduler", "slurm")
+    return render(verb, res, as_json, sched)
 
 
 def collect(client, task_id, verb=None, as_json=False):
@@ -287,7 +321,7 @@ def _global(argv, prog):
         try:
             return steps.run(a.target, dry_run=a.dry_run, assume_yes=a.yes,
                              test_job=False if a.no_test_job or a.dry_run else None)
-        except (profiles.UnknownCluster, steps.RemoteError) as e:
+        except (profiles.UnknownCluster, steps.RemoteError, steps.build.PolicyError) as e:
             sys.exit(f"[gcx] {e}")
     if argv[0] == "allowlist":
         try:
@@ -375,6 +409,8 @@ def main(argv=None, prog="gcx"):
         p.add_argument("--no-wait", action="store_true", help="print the task id and return")
         a = p.parse_args(rest[1:])
         kwargs = VERBS[verb][2](a)
+        if verb == "submit" and kwargs.get("account"):
+            kwargs["account"] = _account_spelling(cluster, kwargs["account"])
         for k in PATH_ARGS:
             if isinstance(kwargs.get(k), str):
                 kwargs[k] = _cluster_path(kwargs[k])

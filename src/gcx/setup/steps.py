@@ -10,6 +10,7 @@ before the endpoint first starts, so it is never briefly unrestricted.
 """
 
 import json
+import re
 import secrets
 import shlex
 import sys
@@ -20,6 +21,7 @@ from importlib import resources
 import globus_compute_sdk
 
 from gcx import allowlist, config, doctor, profiles, registry
+from gcx.capabilities import build
 from gcx.capabilities.build import entry_functions
 from gcx.setup import menu
 from gcx.setup.remote import Remote, RemoteError
@@ -68,7 +70,7 @@ class Ctx:
         config.save(self.cluster, self.cfg)
 
     def probe(self):
-        self.facts = self.remote.probe(self.root, self.ep)
+        self.facts = self.remote.probe(self.root, self.ep, self.prof["worker_env"])
 
     def get_client(self):
         if self.client is None:
@@ -108,7 +110,12 @@ def s_venv(c):
     if have == want:
         return Result(OK, f"globus-compute-endpoint {have} in {c.root}/venv")
     venv = shlex.quote(c.remote.abs(c.root) + "/venv")
-    env = " ".join(f"export {k}={shlex.quote(str(v))};" for k, v in c.prof["uv_env"].items())
+    # Double quotes, so a profile value may name the cluster's own variables ($SCRATCH).
+    # Profiles are repo files, not user input; the guard below still rejects quotes.
+    for k, v in c.prof["uv_env"].items():
+        if not re.fullmatch(r"[A-Z_][A-Z0-9_]*", k) or any(ch in str(v) for ch in '"`\\;'):
+            raise RemoteError(f"profile uv_env {k}={v!r} is not a plain value")
+    env = " ".join(f'export {k}="{v}";' for k, v in c.prof["uv_env"].items())
     cmd = (f'set -e; export PATH="$HOME/.local/bin:$PATH"; {env} '
            # UV_NO_MODIFY_PATH: never edit the user's shell startup files.
            "command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | "
@@ -152,7 +159,8 @@ def endpoint_files(c):
             "user_config_template.yaml.j2").read_text().replace(
             "@MAX_WORKERS@", str(c.prof["max_workers"])),
         f"{c.epdir}/user_config_schema.json": data.joinpath("user_config_schema.json").read_text(),
-        f"{c.epdir}/user_environment.yaml": f"# Written by gcx setup.\nPATH: {path}\n",
+        f"{c.epdir}/user_environment.yaml": "# Written by gcx setup.\n" + f"PATH: {path}\n" + "".join(
+            f"{v}: {c.facts['env_' + v]}\n" for v in c.prof["worker_env"] if c.facts.get("env_" + v)),
     }
 
 
@@ -174,13 +182,19 @@ def s_endpoint_files(c):
 
 
 def s_policy(c):
+    problem = None
     if c.cfg.get("policy"):
-        return Result(OK, "commands: " + ", ".join(c.cfg["policy"]["capabilities"]))
+        try:
+            build.validate(c.cfg["policy"])
+            return Result(OK, "commands: " + ", ".join(c.cfg["policy"]["capabilities"]))
+        except build.PolicyError as e:
+            problem = str(e)
 
     def act():
         c.cfg["policy"] = menu.build_policy(c.cluster, c.prof, c.facts, c.root, c.ask)
         c.save()
-    return Result(HUMAN, "choose which commands gcx may run", act)
+    return Result(HUMAN, "choose which commands gcx may run" +
+                  (f" (the saved choices are invalid: {problem})" if problem else ""), act)
 
 
 def s_register(c):
@@ -381,7 +395,7 @@ def s_service(c):
         while time.time() < deadline:
             time.sleep(15)
             r, l = allowlist.service_state(c.get_client(), c.cfg["endpoint"])
-            if r and l == want and c.remote.probe(c.root, c.ep).get("restart_pending") != "yes":
+            if r and l == want and c.remote.probe(c.root, c.ep, c.prof["worker_env"]).get("restart_pending") != "yes":
                 c.needs_restart = False
                 return
         raise RemoteError("timed out waiting for the endpoint to restart")
@@ -476,18 +490,21 @@ def run_test_job(c, ask_first=True):
         f'echo "gcx-test-ok {token} on $(hostname -s)"\n'
     path = f"{c.root}/test/hello.{sched}"
     c.remote.write(path, script)
-    from gcx.cli import call_capability
+    from gcx.cli import call_capability, job_id_of
     sub = call_capability(c.cluster, "gcx_submit", script=path, account=acct, queue=queue,
                           walltime="00:05:00", job_name="gcx-setup-test")
-    if sub.get("rc") != 0 or not sub.get("job_id"):
-        print(f"FAIL  test job submission: {sub.get('stderr', '').strip()[-300:]}")
+    job = job_id_of(sub, sched) if sub.get("rc") == 0 else None
+    if not job:
+        print(f"FAIL  test job submission: {(sub.get('stderr', '') or sub.get('stdout', '')).strip()[-300:]}")
         return 1
-    job = sub["job_id"]
     print(f"      submitted {job}; waiting for it to finish")
     deadline = time.time() + 1800
     while time.time() < deadline:
         time.sleep(20)
         h = call_capability(c.cluster, "gcx_history", job_ids=[job])
+        if h.get("refused"):
+            print(f"FAIL  following test job {job}: {h.get('stderr', '').strip()}")
+            return 1
         text = h.get("stdout", "")
         if any(s in text for s in ("COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", " F ")):
             break

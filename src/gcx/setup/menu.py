@@ -1,5 +1,6 @@
 """The questions `gcx setup` asks. Every question has a default; --yes takes them."""
 
+import re
 import subprocess
 
 from gcx import profiles
@@ -37,7 +38,7 @@ class Prompter:
         """Typed values REPLACE the default (accounts, queues: "restrict to these")."""
         while True:
             got = self.ask(question + " (comma-separated)", ", ".join(default))
-            items = _split(got)
+            items = [] if got.strip().lower() in NONE_WORDS else _split(got)
             if self._accept(items):
                 return items
 
@@ -52,6 +53,13 @@ class Prompter:
             got = self.ask("Add directories (comma-separated; -PATH removes one, "
                            "e.g. -~; Enter keeps these)", "")
             items = list(default)
+            bad = [x for x in _split(got) if not x.startswith("-") and not is_path(x)]
+            if bad:
+                hint = (" (that looks like an answer to \"Use this?\", which comes next)"
+                        if any(b.lower() in YES_NO for b in bad) else "")
+                print(f"  not a directory: {', '.join(bad)}{hint}. Use absolute paths, "
+                      f"~/... or $VAR/...; Enter keeps the list.")
+                continue
             for x in _split(got):
                 if x.startswith("-"):
                     if x[1:] not in items:
@@ -66,6 +74,15 @@ class Prompter:
         if self.yes:
             return True
         return self.confirm(f"-> {', '.join(items) or '(none)'}. Use this?", True)
+
+
+YES_NO = ("y", "n", "yes", "no")
+NONE_WORDS = ("none", "-")
+
+
+def is_path(x):
+    """An absolute, ~ or $VAR path, and not the whole filesystem."""
+    return bool(re.fullmatch(r"(/|~|\$)[^\s,]*", x)) and x.rstrip("/") != ""
 
 
 def _split(text):
@@ -123,7 +140,9 @@ def build_policy(cluster, prof, facts, root, ask):
         roots = resolve_roots(ask.extend_list("Directories gcx may submit scripts from",
                                               prof["script_roots"]), facts)
         policy["script_roots"] = roots + ([test_dir] if not _covers(roots, test_dir) else [])
-        accounts = _csv(facts, "accounts")
+        accounts = [a for a in _csv(facts, "accounts") if a != "default"]  # TACC lists a pseudo-account
+        if prof.get("accounts_upper"):
+            accounts = [a.upper() for a in accounts]
         if prof["scheduler"] == "slurm" and accounts:
             print(f"  Your accounts on {cluster}: {', '.join(accounts)}")
         policy["accounts"] = ask.choose_list("Accounts gcx may submit to",

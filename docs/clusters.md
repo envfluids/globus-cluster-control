@@ -10,7 +10,7 @@ last full setup plus test job.
 | dsi | set up, locked down | Slurm | single (fe02) | no (no collection exposes home) | 2026-10-01 |
 | delta | set up, locked down | Slurm | on-use (no cron) | yes, but no keepalive state to show | 2026-10-02 |
 | deltaai | set up, locked down | Slurm | on-use (no cron) | no | 2026-10-02 |
-| stampede3 | profiled | Slurm | unknown (cron policy unknown) | yes | — |
+| stampede3 | set up, locked down | Slurm | failover login4 → login1 | yes | 2026-10-02 |
 | derecho | profiled | PBS | expected single | yes | — |
 | polaris | profiled | PBS | expected single | no | — |
 
@@ -142,3 +142,58 @@ the new function IDs, and calls would have been refused.
 `allowlist --apply` now restarts the endpoint directly over SSH when there is
 no cron keepalive, and clears the stale request. Re-applied on Delta, then
 used for DeltaAI.
+
+## stampede3 (2026-10-02)
+
+Fresh install, run by the user. It took four rounds to get through: a menu
+bug, then three TACC-specific facts that only a real submission revealed.
+
+- **Probe** (`login4`):
+  - Slurm; cron **allowed**. Login nodes `login1`–`login5` have public names
+    (the round-robin covers 1–4), so failover works.
+  - Python 3.12.9 and uv present; outbound 443 and 5671 open.
+  - 8 GB per-process virtual memory cap (`ulimit -v`). The throttled uv
+    install took 84 s and the endpoint runs under the cap.
+  - **`$HOME` quota is 14 GB, 85% used**, not the 25 GB the profile first
+    said. uv's cache is pointed at `$SCRATCH` (`UV_CACHE_DIR`); the venv
+    takes 59 MB.
+- **Choices**:
+  - commands: status, submit, read, shell;
+  - directories `~`, `$WORK` and `$SCRATCH`, resolved to
+    `/work2/09979/awikner/stampede3` and `/scratch/09979/awikner`;
+  - queues `skx`, `skx-dev`, `spr`, `h100`, `pvc`, `icx`;
+  - account `TG-ATM170020`;
+  - keepalive failover, primary login4 and backup login1, with cron
+    installed on both; `gcx status` shows both heartbeats.
+- **What went wrong, in order**:
+  1. **`y` saved as a script directory.** It was typed at "Add directories"
+     in answer to the "Use this?" that follows, and only failed at
+     registration, with a traceback. Fixed: entries are checked as typed,
+     y/n are explained, invalid saved answers send setup back to the menu,
+     and QoS `none` means empty.
+  2. **The `default` account.** sacctmgr lists a pseudo-account `default`
+     that cannot be used. It was removed, and setup no longer suggests it.
+  3. **Account case.** Slurm reports `tg-atm170020`, but TACC's submit filter
+     rejects anything but `TG-ATM170020` ("Unknown project"). The profile
+     sets `accounts_upper`, so setup suggests the uppercase name. On the
+     laptop, `gcx submit -A` maps any case to the policy's spelling.
+  4. **Login-shell variables.** TACC's filter aborts without them ("Unable to
+     query WORK2 environment variable"). The profile's `worker_env` names
+     the variables to copy from the login shell into the endpoint's
+     `user_environment.yaml`: WORK, WORK2, SCRATCH, STOCKYARD, STOCKYARD2,
+     ARCHIVE, TACC_SYSTEM, TACC_DOMAIN.
+  5. **Banner before the job ID.** TACC's `sbatch --parsable` prints a
+     welcome banner, an env dump and checks to stdout before the job ID, so
+     the runtime's `job_id` was all of that text. Setup then followed a job
+     whose ID it could not parse until its 30-minute limit. Fixed on the
+     laptop side (`cli.job_id_of`: the last line that looks like a job ID),
+     and setup now fails at once if history refuses the ID. The runtime fix
+     is deferred to the next change that re-registers functions anyway.
+- **Result**:
+  - `doctor` passes on every check.
+  - Test jobs 3557959 and 3558018 on `spr` completed with the run's token
+    (the first one finished, but setup could not follow it, per item 5).
+  - A CLI `submit` with the lowercase account printed job 3558038.
+  - `gcx setup stampede3 --dry-run` reports nothing to change.
+- **Not yet done**: a live failover test, i.e. login4's cron disabled and
+  login1 taking over, as was done on Midway3.
