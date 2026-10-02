@@ -141,6 +141,10 @@ def build_policy(cluster, prof, facts, root, ask):
                                               prof["script_roots"]), facts)
         policy["script_roots"] = roots + ([test_dir] if not _covers(roots, test_dir) else [])
         accounts = [a for a in _csv(facts, "accounts") if a != "default"]  # TACC lists a pseudo-account
+        if not accounts and prof.get("accounts_from_groups"):
+            # PBS has no account list; NCAR projects are Unix groups (uchi0014).
+            accounts = [g for g in _csv(facts, "groups")
+                        if re.fullmatch(prof["accounts_from_groups"], g)]
         if prof.get("accounts_upper"):
             accounts = [a.upper() for a in accounts]
         if prof["scheduler"] == "slurm" and accounts:

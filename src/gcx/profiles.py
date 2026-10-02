@@ -24,6 +24,7 @@ DEFAULTS = {
     # Login-shell variables the site's tools need (TACC's submit filter reads $WORK2):
     # their probed values are copied into the endpoint worker's environment.
     "worker_env": [],
+    "accounts_from_groups": "",   # regex: suggest matching Unix groups as projects (NCAR)
     "test_job": {},
     "notes": "",
 }

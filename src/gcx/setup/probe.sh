@@ -9,6 +9,7 @@ first() { local p; p=$(command -v "$1" 2>/dev/null) && [ -n "$p" ] && echo "$p";
 kv host "$(hostname -s 2>/dev/null)"
 kv fqdn "$(hostname -f 2>/dev/null)"
 kv user "$(id -un)"
+kv groups "$(id -Gn 2>/dev/null | tr ' ' ',')"
 kv home "$HOME"
 kv shell_ulimit_v "$(ulimit -v 2>/dev/null)"
 # Site variables that only the login shell sets; the endpoint's worker does not

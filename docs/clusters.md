@@ -11,7 +11,7 @@ last full setup plus test job.
 | delta | set up, locked down | Slurm | on-use (no cron) | yes, but no keepalive state to show | 2026-10-02 |
 | deltaai | set up, locked down | Slurm | on-use (no cron) | no | 2026-10-02 |
 | stampede3 | set up, locked down | Slurm | failover login4 → login1 | yes | 2026-10-02 |
-| derecho | profiled | PBS | expected single | yes | — |
+| derecho | set up, locked down | PBS | on-use (no cron) | yes, but no keepalive state to show | 2026-10-02 |
 | polaris | profiled | PBS | expected single | no | — |
 
 ## midway3
@@ -210,3 +210,44 @@ bug, then three TACC-specific facts that only a real submission revealed.
     2 minutes with no endpoint.
   - Afterwards one endpoint process runs on login4, and the dry run reports
     nothing to change.
+
+## derecho (2026-10-02)
+
+Fresh install, run by the user. **This was the first live use of the PBS
+paths** (`qsub`, `qstat`, `qdel`).
+
+- **Probe** (`derecho6`):
+  - PBS Pro; cron **denied** (PAM), as on Delta. `derecho1`–`8` have public
+    names, but without cron there is no failover.
+  - System Python 3.11; the endpoint's 3.12 comes from uv.
+  - Home quota 100 GB (69% used).
+  - Project groups `uchi0014`, `uchi0018` and `uric0009`.
+- **Found before running, by reading the PBS paths**:
+  - Setup's test job looked for `" F "`, but `qstat -x -f` prints
+    `job_state = F` at the end of a line, so setup would never have seen a
+    PBS job finish.
+  - Setup only knew Slurm's output file name; PBS writes `<name>.o<number>`.
+  - PBS has no account list to probe. On NCAR, projects are Unix groups, so
+    the profile's `accounts_from_groups` plus `accounts_upper` make setup
+    suggest `UCHI0014`, `UCHI0018` and `URIC0009`.
+- **Choices**:
+  - commands: status, submit, read, shell;
+  - read `~`, `/glade/work/$USER`, `/glade/derecho/scratch/$USER`,
+    `/glade/campaign/univ/uchi0018`;
+  - submit from the first three;
+  - accounts `URIC0009`, `UCHI0014`, `UCHI0018`;
+  - keepalive on-use.
+  - Queues were first entered as `cpu`, `gpu`, `cpudev` and `gpudev`, which
+    are where jobs land after routing. They were corrected to the routing
+    queues users submit to, `main` and `develop`.
+- **Result**:
+  - `doctor` passes on every check.
+  - Test job 7686534.desched1 in `develop` (routed to `cpudev`) completed;
+    its `.o` file was read back with the run's token.
+  - **Cancel tested live**: a 2-minute sleep job was running (`R`), and
+    `gcx derecho cancel` ended it (`job_state = F`, `Exit_status = 271`,
+    PBS's code for a qdel kill).
+  - Refused: queue `cpu`; account `NCAR0001`.
+- **Limits**:
+  - Restart on use needs `gcx login derecho`.
+  - The cluster is being retired, with data moving to Delta.

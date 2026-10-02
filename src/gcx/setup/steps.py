@@ -279,9 +279,8 @@ def s_personal(c):
 def s_keepalive_mode(c):
     ka = c.cfg.get("keepalive")
     if ka:
-        nodes = [ka.get("primary"), ka.get("backup")]
-        return Result(OK, f"{ka['mode']}" + (f": {', '.join(n for n in nodes if n)}"
-                                             if ka["mode"] != "none" else ""))
+        nodes = [n for n in (ka.get("primary"), ka.get("backup")) if n]
+        return Result(OK, ka["mode"] + (f": {', '.join(nodes)}" if nodes else ""))
 
     def act():
         c.cfg["keepalive"] = menu.choose_keepalive(c.cluster, c.prof, c.facts, c.ask)
@@ -466,6 +465,14 @@ def run(cluster, dry_run=False, assume_yes=False, test_job=None):
     return rc
 
 
+def done(history, sched):
+    """Has the job in this `gcx_history` output reached a final state?"""
+    if sched == "slurm":
+        return any(st in history for st in ("COMPLETED", "FAILED", "CANCELLED", "TIMEOUT",
+                                            "OUT_OF_MEMORY", "NODE_FAIL"))
+    return bool(re.search(r"job_state = F\b", history))  # qstat -x -f
+
+
 def run_test_job(c, ask_first=True):
     """Submit, follow and read back a 1-CPU job through gcx itself."""
     pol = c.cfg["policy"]
@@ -506,15 +513,16 @@ def run_test_job(c, ask_first=True):
             print(f"FAIL  following test job {job}: {h.get('stderr', '').strip()}")
             return 1
         text = h.get("stdout", "")
-        if any(s in text for s in ("COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", " F ")):
+        if done(text, sched):
             break
-    out_name = f"slurm-{job}.out" if sched == "slurm" else None
-    if out_name and "read" in pol["capabilities"]:
+    # Default output names: Slurm slurm-<id>.out; PBS <job name>.o<numeric id>.
+    out_name = f"slurm-{job}.out" if sched == "slurm" else f"gcx-setup-test.o{job.split('.')[0]}"
+    if "read" in pol["capabilities"]:
         r = call_capability(c.cluster, "gcx_read", path=f"{c.root}/test/{out_name}", mode="tail", lines=5)
         ok = f"gcx-test-ok {token}" in r.get("stdout", "")
         print(f"{'PASS' if ok else 'FAIL'}  test job {job} output {'checked' if ok else 'missing'}"
               f"{'' if ok else ': ' + r.get('stdout', '')[-200:] + r.get('stderr', '')[-200:]}")
         return 0 if ok else 1
-    ok = "COMPLETED" in text or " F " in text
+    ok = done(text, sched) and ("COMPLETED" in text or "Exit_status = 0" in text)
     print(f"{'PASS' if ok else 'FAIL'}  test job {job} finished")
     return 0 if ok else 1

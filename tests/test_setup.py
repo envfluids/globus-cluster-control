@@ -251,3 +251,13 @@ def test_worker_env_copied_from_login_shell():
 def test_unsafe_env_var_names_refused():
     with pytest.raises(RemoteError):
         Remote("x").probe("~/.gcx", "gcx", env_vars=["WORK; rm -rf ~"])
+
+
+def test_pbs_job_completion_and_ncar_projects():
+    assert steps.done("Job Id: 1.desched1\n    job_state = F\n    Exit_status = 0\n", "pbs")
+    assert not steps.done("Job Id: 1.desched1\n    job_state = R\n", "pbs")
+    assert steps.done("123  test  cpu  COMPLETED", "slurm")
+    prof = dict(profiles.load("derecho"))
+    c = ctx(prof=prof, facts={"scheduler": "pbs", "accounts": "", "groups": "ncar,uchi0014,uchi0018,docker"})
+    pol = menu.build_policy("derecho", prof, c.facts, c.root, c.ask)
+    assert pol["accounts"] == ["UCHI0014", "UCHI0018"]
