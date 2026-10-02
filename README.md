@@ -10,7 +10,7 @@ Globus's cloud service. The Mac talks only to that service, over stateless HTTPS
 a dropped network costs a retry, not a login, and a submitted task waits in the
 cloud until its result is collected.
 
-Status: **Midway3 set up and locked down; the other clusters are profiled, not yet set up** (2026-10-01). Design, failover and test record:
+Status: **all seven clusters set up and locked down** (2026-10-02); per-cluster record in [docs/clusters.md](docs/clusters.md). Design, failover and test record:
 [docs/design.md](docs/design.md).
 
 ## Getting started
@@ -29,8 +29,9 @@ gcx setup midway3                                   # asks questions, installs, 
 ```
 
 Known clusters: delta, deltaai, derecho, dsi, midway3, polaris, stampede3
-(`src/gcx/data/profiles/`). Only Midway3 is verified so far; the others are
-set up for the first time in the next phase.
+(`src/gcx/data/profiles/`). All have been set up and verified once; see
+[docs/clusters.md](docs/clusters.md) for what each needs (failover or restart
+on use, account spelling, test-job resources).
 
 - **`gcx ssh-config`** writes SSH aliases with a shared connection per cluster
   into your SSH config, between `# >>> gcx >>>` markers. It also adds one

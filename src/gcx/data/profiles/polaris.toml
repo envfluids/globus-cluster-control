@@ -1,4 +1,4 @@
-# ALCF Polaris. UNVERIFIED: not yet set up with gcx (Phase 6).
+# ALCF Polaris. Set up with gcx and verified 2026-10-02 (docs/clusters.md).
 
 name = "polaris"
 description = "ALCF Polaris"
@@ -8,7 +8,12 @@ ssh_host = "polaris.alcf.anl.gov"
 ssh_persist = "yes"
 mfa_single_use = true
 scheduler = "pbs"
-login_nodes = []
+verified = "2026-10-02"
+login_nodes = []   # cron is denied on the login nodes (2026-10-02): keepalive "on-use"
+
+# ALCF projects are Unix groups (lighthouse-uchicago, ...); skip the generic
+# `users` group and the hardware-access *_users groups.
+accounts_from_groups = "(?!users$)(?!.*_users$)[A-Za-z0-9][\\w.-]*"
 
 # The Polaris collection is rooted at /eagle, not home, so `gcx status` is
 # unavailable here (gcx doctor still works).
@@ -21,6 +26,11 @@ submit_extra = ["-l", "filesystems=home:eagle"]   # every Polaris job needs it
 read_roots = ["~"]
 script_roots = ["~"]
 notes = "No CPU-only queue: the test job takes a whole GPU node in `debug` (1 h max, 1 running job per user)."
+
+# /home quotas on Polaris are small (the first user's was 95% full): keep uv's
+# download cache off it. Node-local /tmp is fine; the venv itself stays in home.
+[uv_env]
+UV_CACHE_DIR = "/tmp/$USER-gcx-uv-cache"
 
 [test_job]
 queue = "debug"

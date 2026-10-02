@@ -12,7 +12,7 @@ last full setup plus test job.
 | deltaai | set up, locked down | Slurm | on-use (no cron) | no | 2026-10-02 |
 | stampede3 | set up, locked down | Slurm | failover login4 → login1 | yes | 2026-10-02 |
 | derecho | set up, locked down | PBS | on-use (no cron) | yes, but no keepalive state to show | 2026-10-02 |
-| polaris | profiled | PBS | expected single | no | — |
+| polaris | set up, locked down | PBS | on-use (no cron) | no | 2026-10-02 |
 
 ## midway3
 
@@ -251,3 +251,41 @@ paths** (`qsub`, `qstat`, `qdel`).
 - **Limits**:
   - Restart on use needs `gcx login derecho`.
   - The cluster is being retired, with data moving to Delta.
+
+## polaris (2026-10-02)
+
+Fresh install, run by the user over the existing SSH master, so no extra
+single-use MFA token was spent.
+
+- **Probe** (`polaris-login-04`):
+  - PBS in `/opt/pbs/bin`; cron **denied**. System Python 3.6; the
+    endpoint's 3.12 comes from uv. Outbound 443 and 5671 open.
+  - Projects are Unix groups (`lighthouse-uchicago`, `MDClimateSim`,
+    `MDClimSim`, `AI-S2S`). The profile's `accounts_from_groups` skips
+    `users` and the hardware `*_users` groups.
+  - **`/home` quota 76.1 GB, 95% used (72.3 GB).** uv's cache goes to
+    node-local `/tmp`; the venv takes 21 MB.
+- **Choices**:
+  - commands: status, submit, read, shell;
+  - read and submit under `~` and `/eagle/lighthouse-uchicago`;
+  - account `lighthouse-uchicago`;
+  - queues `debug`, `debug-scaling`, `prod`, `preemptable`, `capacity`;
+  - keepalive on-use.
+  - `-l filesystems=home:eagle` is added to every submission (profile
+    `submit_extra`).
+  - The endpoint runs **2 workers**, per ALCF's "with caution" for user
+    endpoints on login nodes.
+- **Result**:
+  - `doctor` passes on every check; the dry run reports nothing to change.
+  - Test job 7707542 in `debug` ran on one GPU node (`x3111c0s7b0n0`), exited
+    0, and its `.o` file carried the run's token.
+- **Bug found**: `~` was saved twice in the read roots. A typed `~/` was
+  compared with `~` before the trailing slash was removed. Duplicates are now
+  compared and removed after normalising; the policy was cleaned and
+  re-applied.
+- **Limits**:
+  - On-use restarts need the SSH master. On Polaris it persists until closed
+    (`ControlPersist yes`), so it is normally up, and `gcx login` asks before
+    spending a token on it.
+  - No `gcx status`, since the Polaris collection is rooted at `/eagle`, not
+    home.

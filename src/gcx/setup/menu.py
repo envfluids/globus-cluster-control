@@ -65,7 +65,7 @@ class Prompter:
                     if x[1:] not in items:
                         print(f"  ({x[1:]} is not in the list; nothing to remove)")
                     items = [i for i in items if i != x[1:]]
-                elif x not in items:
+                elif x.rstrip("/") not in (i.rstrip("/") for i in items):
                     items.append(x)
             if self._accept(items):
                 return items
@@ -107,7 +107,9 @@ def resolve_roots(roots, facts):
                 print(f"  (dropping {r}: {head} is not set on this cluster)")
                 continue
             r = value + sep + rest
-        out.append(r.rstrip("/") if r != "/" else r)
+        r = r.rstrip("/") if r != "/" else r
+        if r not in out:  # "~/" and "~" are the same root (Polaris, 2026-10-02)
+            out.append(r)
     return out
 
 
