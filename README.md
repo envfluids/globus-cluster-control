@@ -85,7 +85,8 @@ gcx <cluster> submit ~/runs/job.sbatch -A <account> -p <queue> -t 01:00:00
 gcx <cluster> cancel <job-id>
 gcx <cluster> tail ~/runs/job.out -n 100   # also: head, ls, du
 gcx <cluster> sh '<command>'               # only where shell is enabled
-gcx doctor <cluster>                       # health check
+gcx doctor                                 # health check of every cluster (-v: all checks)
+gcx doctor <cluster>                       # every check for one cluster
 gcx status <cluster>                       # which login node holds the endpoint
 ```
 

@@ -1,8 +1,10 @@
-"""`gcx doctor <cluster>`: prove the cluster works and is locked down.
+"""`gcx doctor [cluster]`: prove clusters work and are locked down.
 
-Each check prints PASS/FAIL with a reason; exit 0 only if all pass. Safe to
-run at any time: it only reads, plus one harmless raw `echo` that must be
-refused once the allowlist is in force.
+With a cluster, every check prints PASS/FAIL with a reason. Without one, all
+configured clusters are checked in parallel and each gets one summary line,
+with the failing checks spelled out (all checks with -v). Exit 0 only if
+everything passes. Safe to run at any time: it only reads, plus one harmless
+raw `echo` per cluster that must be refused once the allowlist is in force.
 """
 
 import hashlib
@@ -69,9 +71,50 @@ def checks(client, cluster):
     yield "scheduler reachable (jobs)", j["rc"] == 0, j.get("stderr", "").strip()[:80] or "ok"
 
 
+def _line(name, passed, detail):
+    return f"{'PASS' if passed else 'FAIL'}  {name:42s} {detail}"
+
+
 def main(client, cluster):
     ok = True
     for name, passed, detail in checks(client, cluster):
         ok &= passed
-        print(f"{'PASS' if passed else 'FAIL'}  {name:42s} {detail}")
+        print(_line(name, passed, detail))
     return 0 if ok else 1
+
+
+def collect(client_factory, cluster):
+    """All check results for one cluster; an error becomes a failed check."""
+    results = []
+    try:
+        for r in checks(client_factory(), cluster):
+            results.append(r)
+    except Exception as e:  # network, auth, a cluster gone missing: report, don't crash
+        results.append(("doctor finished", False, f"{type(e).__name__}: {str(e)[:120]}"))
+    return results
+
+
+def main_all(client_factory, clusters, verbose=False, workers=8):
+    """Check every cluster in parallel; one summary line each."""
+    from concurrent.futures import ThreadPoolExecutor
+    if not clusters:
+        print("[gcx] no clusters configured; set one up with `gcx setup <cluster>`")
+        return 1
+    # One client per cluster: the SDK client serializes its own requests.
+    with ThreadPoolExecutor(max_workers=min(workers, len(clusters))) as pool:
+        results = dict(zip(clusters, pool.map(lambda c: collect(client_factory, c), clusters)))
+    width = max(map(len, clusters))
+    bad = 0
+    for c in clusters:
+        res = results[c]
+        failed = [r for r in res if not r[1]]
+        host = next((d.split(",")[0] for n, p, d in res if n == "endpoint answers" and p), "")
+        if failed:
+            bad += 1
+            print(f"FAIL  {c:{width}s}  {len(failed)} of {len(res)} checks failed")
+        else:
+            print(f"PASS  {c:{width}s}  {len(res)} checks" + (f", endpoint on {host}" if host else ""))
+        for r in (res if verbose else failed):
+            print("        " + _line(*r))
+    print(f"\n{len(clusters) - bad} of {len(clusters)} clusters healthy")
+    return 0 if not bad else 1

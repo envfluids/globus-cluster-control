@@ -89,7 +89,8 @@ Source and docs: {REPO}
   human to run `gcx login <cluster>`.
 - **Never run the commands that need the human**: `gcx login`, `gcx setup`,
   `gcx ssh-config --apply`, or any Globus login. They need MFA or a browser.
-  `gcx doctor <cluster>` is a safe health check.
+  `gcx doctor` (all clusters, one line each) and `gcx doctor <cluster>` are
+  safe health checks.
 - Quote `$VARS` and `~` (`gcx c ls '$SCRATCH'`), so they expand on the
   cluster. Paths are relative to the cluster home unless absolute.
 - `--json` gives machine-readable output, and `--no-wait` returns a task ID
