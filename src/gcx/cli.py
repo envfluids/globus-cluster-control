@@ -14,7 +14,7 @@
     gcx result <task-id>             collect a task started with --no-wait
     gcx register <cluster>           register the cluster's functions from its policy
     gcx allowlist <cluster> [--apply | --off]   restrict the endpoint to those functions
-    gcx doctor <cluster>             check that the cluster works and is locked down
+    gcx doctor [cluster] [-v]        check that clusters work and are locked down (all if omitted)
     gcx setup <cluster> [--dry-run] [--yes] [--menu]   install / update, then test; --menu changes choices
     gcx ssh-config [cluster ...] [--user U] [--apply]   SSH aliases with shared connections
     gcx login [cluster ...] [--refresh]   open those connections (you answer MFA), once a day
@@ -283,7 +283,11 @@ GLOBAL = ("status", "result", "register", "allowlist", "doctor", "setup")
 
 def _global(argv, prog):
     p = argparse.ArgumentParser(prog=f"{prog} {argv[0]}")
-    p.add_argument("target")
+    p.add_argument("target", nargs="?" if argv[0] == "doctor" else None,
+                   help="cluster (doctor: omit to check every configured cluster)")
+    if argv[0] == "doctor":
+        p.add_argument("-v", "--verbose", action="store_true",
+                       help="with all clusters: show every check, not only failures")
     p.add_argument("--force", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--json", action="store_true")
     if argv[0] == "setup":
@@ -302,6 +306,8 @@ def _global(argv, prog):
     if argv[0] == "result":
         return collect(_client(), a.target, as_json=a.json)
     if argv[0] == "doctor":
+        if a.target is None:
+            return doctor.main_all(_client, config.configured(), verbose=a.verbose)
         return doctor.main(_client(), a.target)
     if argv[0] == "setup":
         from gcx.setup import steps

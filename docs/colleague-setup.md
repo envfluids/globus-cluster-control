@@ -90,7 +90,8 @@ gcx delta jobs
 gcx delta submit ~/runs/train.sbatch -A <account> -p <queue> -t 02:00:00
 gcx delta tail ~/runs/slurm-123456.out -n 100
 gcx delta cancel 123456
-gcx doctor delta            # health check
+gcx doctor                  # health check of every cluster you set up
+gcx doctor delta            # every check for one cluster
 ```
 
 | Exit code | Meaning |

@@ -23,8 +23,8 @@ the cluster side.
   `gcx --status midway3`.
 - **The endpoint only runs registered gcx functions.** A raw Globus Compute
   `ShellFunction` gets 403 by design. Policy changes go through
-  `gcx setup <c> --menu`, run by the human; `gcx doctor <c>` is the health
-  check.
+  `gcx setup <c> --menu`, run by the human; `gcx doctor` (all clusters) or
+  `gcx doctor <c>` is the health check.
 - **Per-cluster facts and lessons** are in `docs/clusters.md`. Read it before
   changing a profile in `src/gcx/data/profiles/`.
 - **Day-to-day agent usage** is described by the generated skill
