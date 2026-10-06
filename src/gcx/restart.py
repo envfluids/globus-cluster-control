@@ -70,3 +70,50 @@ def ensure_online(cluster, cfg, client):
             return
     raise EndpointOffline(f"the {cluster} endpoint did not come online within "
                           f"{ONLINE_WAIT_S} s of restarting; check `gcx doctor {cluster}`")
+
+
+STOP_WAIT_S = 120
+
+
+def _ssh_run(alias, cmd):
+    p = subprocess.run(["ssh", "-o", "BatchMode=yes", alias, cmd], capture_output=True,
+                       text=True, timeout=180, stdin=subprocess.DEVNULL)
+    if p.returncode:
+        raise EndpointOffline(f"ssh {alias} failed: {p.stderr.strip()[-300:]}")
+    return p.stdout
+
+
+def restart_anywhere(cluster, cfg, client, ssh=_ssh_run, sleep=time.sleep):
+    """Restart an endpoint on a cluster without a cron keepalive.
+
+    `globus-compute-endpoint stop` over SSH is wrong on round-robin logins: SSH
+    may land on another node than the one running the endpoint, where `stop`
+    misses it (and acts on a pid file from the other node in the shared home),
+    and the following `start` would make a second copy. So: stop it through the
+    Globus service, which reaches it wherever it runs; wait until it is offline
+    and Globus's reconnect lock has passed; then start it on the node SSH lands
+    on (start_cmd refuses if a copy is still running there).
+    """
+    ep = cfg["endpoint"]
+    alias = cfg.get("ssh", cluster)
+    if status(client, ep) == "online":
+        lock = (client.stop_endpoint(ep) or {}).get("lock_expiration_timestamp") or 0
+        deadline = time.time() + STOP_WAIT_S
+        while status(client, ep) == "online":
+            if time.time() > deadline:
+                raise EndpointOffline(f"the {cluster} endpoint did not stop within {STOP_WAIT_S} s")
+            sleep(5)
+        wait = lock - time.time()
+        if wait > 0:
+            sleep(wait + 2)  # Globus refuses reconnects until the lock expires
+    out = ssh(alias, start_cmd(cfg)).strip()
+    if "already-running-here" in out:
+        raise EndpointOffline(f"an endpoint process is still running on {alias}'s login node "
+                              f"after the stop; check `gcx doctor {cluster}`")
+    deadline = time.time() + ONLINE_WAIT_S
+    while status(client, ep) != "online":
+        if time.time() > deadline:
+            raise EndpointOffline(f"the {cluster} endpoint did not come online within "
+                                  f"{ONLINE_WAIT_S} s of restarting")
+        sleep(5)
+    return out

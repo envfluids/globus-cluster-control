@@ -309,6 +309,40 @@ Verified on macOS, 2026-10-06:
 The decision logic, notification de-duplication, scheduler files and setup
 offer are unit-tested on Linux and macOS in CI.
 
+**Watcher restart, live on Derecho (2026-10-06).** The endpoint had been
+running on derecho6 since setup. It was made to kill itself there (through
+`gcx derecho sh`, which runs on that node), and Globus reported it offline at
+10:35:04. The SSH connection was live after a fresh `gcx login derecho`,
+pinned to derecho2.
+
+- One `gcx watch run` (17 s) restarted the endpoint on derecho2, waited for
+  it to come online, notified "restarted it over SSH", and recorded it.
+- `doctor` passed, and exactly one endpoint process was running.
+
+**Bug found on the way: stopping over SSH on a round-robin login.** The first
+attempt to stop the endpoint ran `globus-compute-endpoint stop` over SSH. It
+landed on derecho2, while the endpoint ran on derecho6.
+
+- `stop` reads `daemon.pid` from the shared home: a process ID from the other
+  node.
+- Here it failed harmlessly, because that ID belonged to another user. But
+  it could have signalled one of your own processes, and it never reaches the
+  real endpoint.
+- The two code paths that restarted with `stop` then `start` over SSH
+  (`gcx allowlist --apply` and setup's `enforced` step, on clusters without
+  cron) would have started a second copy.
+- Both now use `restart.restart_anywhere`:
+  1. Stop through the Globus service (`Client.stop_endpoint`), which reaches
+     the endpoint wherever it runs.
+  2. Wait until Globus reports it offline, then until the reconnect lock in
+     the reply expires (about 60 s).
+  3. Start it on the node SSH lands on; `start_cmd` refuses if a copy still
+     runs there.
+- Live on Derecho: 46 s from stop to online, one process.
+
+The keepalive script is unaffected: it only stops an endpoint running on its
+own node.
+
 ## Submission safety
 
 `globus_sdk`'s transport retries **any** network error up to 5 times, POSTs

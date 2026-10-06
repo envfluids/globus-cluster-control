@@ -389,8 +389,14 @@ def s_service(c):
             c.remote.run(f"touch {c.remote.q(c.root + '/state/restart-request')}")
             print("  restart requested; the keepalive picks it up within 2 minutes")
         else:
-            c.remote.run(f"cd ~ && {c.gce} stop {c.ep}; sleep 5; rm -f {c.epdir}/daemon.pid; "
-                         f"{c.gce} start --detach {c.ep} && sleep 10", timeout=180)
+            # Stop through Globus (reaches it on whichever login node it runs), then
+            # start where SSH lands; see restart.restart_anywhere.
+            from gcx import restart
+            try:
+                out = restart.restart_anywhere(c.cluster, c.cfg, c.get_client())
+            except restart.EndpointOffline as e:
+                raise RemoteError(str(e))
+            print(f"  restarted ({out})")
         deadline = time.time() + SERVICE_WAIT_S
         while time.time() < deadline:
             time.sleep(15)
