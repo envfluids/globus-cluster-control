@@ -14,6 +14,11 @@ last full setup plus test job.
 | derecho | set up, locked down | PBS | on-use (no cron) | yes, but no keepalive state to show | 2026-10-02 |
 | polaris | set up, locked down | PBS | on-use (no cron) | no | 2026-10-02 |
 
+On the on-use clusters (delta, deltaai, derecho, polaris), the laptop watcher
+(`gcx watch`) restarts an offline endpoint over SSH, or asks you to
+`gcx login`. On the cron clusters (midway3, stampede3, dsi), it only alerts
+if cron fails to bring the endpoint back.
+
 ## midway3
 
 Pilot cluster, then adopted by `gcx setup` in place (`remote_root

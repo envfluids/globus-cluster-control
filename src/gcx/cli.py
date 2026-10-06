@@ -19,6 +19,7 @@
     gcx ssh-config [cluster ...] [--user U] [--apply]   SSH aliases with shared connections
     gcx login [cluster ...] [--refresh]   open those connections (you answer MFA), once a day
     gcx skill [--print]              write the Claude Code skill (~/.claude/skills/gcx) from your config
+    gcx watch install|status|run|uninstall   laptop watcher: restart or alert on offline endpoints
 
 Paths are relative to your cluster home unless absolute; ~ and $VARS expand on
 the cluster (an unquoted ~ that your laptop shell expanded is mapped back). Add --json for machine-readable output, --no-wait to print the
@@ -369,6 +370,31 @@ def ssh_config(args):
     return sshconfig.run(pairs, path=a.file, apply=a.apply)
 
 
+def watch_cmd(args):
+    from gcx import watch
+    p = argparse.ArgumentParser(prog="gcx watch",
+                                description="Laptop-side watcher: restart or alert on offline endpoints.")
+    sub = p.add_subparsers(dest="action", required=True)
+    sub.add_parser("run", help="check every cluster once (what the scheduler runs)")
+    i = sub.add_parser("install", help="run `gcx watch run` periodically (launchd / systemd / cron)")
+    i.add_argument("--interval", type=int, default=watch.INTERVAL_MIN, help="minutes (default 30)")
+    sub.add_parser("uninstall", help="remove the scheduled watcher")
+    sub.add_parser("status", help="installed?, last state per cluster, log tail")
+    a = p.parse_args(args)
+    if a.action == "run":
+        watch.run_once()
+        return 0  # offline clusters are reported by notification, not exit code
+    if a.action == "install":
+        kind = watch.install(a.interval)
+        print(f"[gcx] watcher installed ({kind}): every {a.interval} min, log {watch.log_file()}")
+        return 0
+    if a.action == "uninstall":
+        print(f"[gcx] watcher removed ({watch.uninstall()})")
+        return 0
+    watch.show_status()
+    return 0
+
+
 def main(argv=None, prog="gcx"):
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ("-h", "--help"):
@@ -376,6 +402,8 @@ def main(argv=None, prog="gcx"):
         sys.exit(0)
     if argv[0] == "login":
         login(argv[1:])
+    if argv[0] == "watch":
+        sys.exit(watch_cmd(argv[1:]))
     if argv[0] == "skill":
         from gcx import skill
         if argv[1:] == ["--print"]:

@@ -41,9 +41,14 @@ def test_cron_cluster_restarts_through_the_keepalive(monkeypatch):
     assert not any(" start --detach" in c for c in sent)
 
 
-def test_cluster_without_keepalive_restarts_directly(monkeypatch):
+def test_cluster_without_keepalive_restarts_via_globus(monkeypatch):
     # Delta, 2026-10-02: a restart-request with no keepalive to honour it hung.
+    # Derecho, 2026-10-06: `stop` over SSH missed an endpoint on another login node.
+    from gcx import restart
+    called = []
+    monkeypatch.setattr(restart, "restart_anywhere",
+                        lambda c, cfg, client: called.append(c) or "started-on-n2")
     sent = _run_apply(monkeypatch, "on-use")
-    restart = [c for c in sent if " start --detach gcx" in c]
-    assert restart and "rm -f ~/.gcx/state/restart-request" in restart[0]
-    assert not any(c.startswith("touch") for c in sent)
+    assert called == ["c"]
+    assert any(c.startswith("rm -f ~/.gcx/state/restart-request") for c in sent)
+    assert not any(" stop " in c or c.startswith("touch") for c in sent)

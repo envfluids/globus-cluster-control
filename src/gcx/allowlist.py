@@ -16,7 +16,7 @@ import subprocess
 import sys
 import time
 
-from gcx import config, registry
+from gcx import config, registry, restart
 
 COMMENT = "# gcx: only these registered functions may run (gcx allowlist)."
 POLL_S = 15
@@ -105,14 +105,16 @@ def run(client, cluster, apply=False, off=False):
         print(f"[gcx] pushed; waiting for the keepalive to restart the endpoint "
               f"(up to {TIMEOUT_S // 60} min)")
     else:
-        # No cron keepalive here (on-use / none): restart directly. Clear any stale
-        # request so setup does not see a restart as pending forever.
-        ep, root = cfg["endpoint_name"], cfg.get("remote_root", "~/.gcx")
-        gce = f"{root}/venv/bin/globus-compute-endpoint"
-        _ssh(alias, f"rm -f {state}/restart-request; cd ~ && {gce} stop {ep} >/dev/null 2>&1; "
-                    f"sleep 5; rm -f ~/.globus_compute/{ep}/daemon.pid; "
-                    f"{gce} start --detach {ep}")
-        print("[gcx] pushed and restarted the endpoint over SSH; waiting for Globus")
+        # No cron keepalive here (on-use / none): restart directly, through the
+        # Globus service so it works whichever login node runs the endpoint.
+        # Clear any stale request so setup does not see a restart as pending.
+        _ssh(alias, f"rm -f {state}/restart-request")
+        print("[gcx] pushed; restarting the endpoint (stop via Globus, start over SSH)")
+        try:
+            out = restart.restart_anywhere(cluster, cfg, client)
+        except restart.EndpointOffline as e:
+            raise AllowlistError(str(e))
+        print(f"[gcx] {out}; waiting for Globus to report the allowlist")
     deadline = time.time() + TIMEOUT_S
     while time.time() < deadline:
         time.sleep(POLL_S)

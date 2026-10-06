@@ -13,6 +13,8 @@ the cluster side.
 - **Exit code 75 = submission state unknown.** Check with `squeue` (or the
   equivalent) before resubmitting. Never wrap `gcx submit` in your own retry
   loop; that would undo its at-most-once guarantee.
+- **The laptop watcher** (`gcx watch`, `src/gcx/watch.py`) is the human's: you
+  may run `gcx watch status`, never `install`/`uninstall`.
 - **Never run `globus-compute-endpoint login`**, the laptop's first Globus login,
   `gcx login`, or `gcx ssh-config --apply`. They need MFA, a browser, or edit
   the human's SSH config; ask the human. `gcx ssh-config` without `--apply`

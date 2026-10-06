@@ -60,3 +60,48 @@ def test_offline_without_master_asks_for_login(monkeypatch):
                         lambda argv, **kw: subprocess.CompletedProcess(argv, 255, "", ""))
     with pytest.raises(restart.EndpointOffline, match="gcx login delta"):
         restart.ensure_online("delta", CFG, Client(["offline"]))
+
+
+class StoppableClient:
+    """online until stop_endpoint is called, then offline until started."""
+    def __init__(self, online=True, lock_in=0.0):
+        self.online, self.lock_in, self.stops = online, lock_in, 0
+
+    def get_endpoint_status(self, ep):
+        return {"status": "online" if self.online else "offline"}
+
+    def stop_endpoint(self, ep):
+        self.stops += 1
+        self.online = False
+        return {"lock_expiration_timestamp": restart.time.time() + self.lock_in}
+
+
+def test_restart_anywhere_stops_via_globus_waits_for_lock_then_starts():
+    client, slept, sent = StoppableClient(lock_in=60), [], []
+
+    def ssh(alias, cmd):
+        sent.append((alias, cmd))
+        client.online = True
+        return "started-on-derecho2\n"
+    out = restart.restart_anywhere("derecho", CFG, client, ssh=ssh, sleep=slept.append)
+    assert client.stops == 1 and out == "started-on-derecho2"
+    assert any(s > 55 for s in slept)  # waited out the reconnect lock
+    (alias, cmd), = sent
+    assert alias == "delta" and "start --detach gcx" in cmd and " stop " not in cmd
+
+
+def test_restart_anywhere_skips_the_stop_when_already_offline():
+    client = StoppableClient(online=False)
+
+    def ssh(alias, cmd):
+        client.online = True
+        return "started-on-n1"
+    restart.restart_anywhere("delta", CFG, client, ssh=ssh, sleep=lambda s: None)
+    assert client.stops == 0
+
+
+def test_restart_anywhere_refuses_if_a_copy_still_runs_here():
+    client = StoppableClient(online=False)
+    with pytest.raises(restart.EndpointOffline, match="still running"):
+        restart.restart_anywhere("delta", CFG, client, ssh=lambda a, c: "already-running-here",
+                                 sleep=lambda s: None)
