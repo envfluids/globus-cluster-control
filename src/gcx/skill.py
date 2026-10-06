@@ -88,7 +88,9 @@ Source and docs: {REPO}
 - **Exit 69**: the endpoint is offline and could not be restarted. Ask the
   human to run `gcx login <cluster>`.
 - **Never run the commands that need the human**: `gcx login`, `gcx setup`,
-  `gcx ssh-config --apply`, or any Globus login. They need MFA or a browser.
+  `gcx ssh-config --apply`, `gcx watch install`/`uninstall`, or any Globus
+  login. They need MFA or a browser, or change the human's own setup.
+  `gcx watch status` shows the laptop watcher's last check per cluster.
   `gcx doctor` (all clusters, one line each) and `gcx doctor <cluster>` are
   safe health checks.
 - Quote `$VARS` and `~` (`gcx c ls '$SCRATCH'`), so they expand on the

@@ -83,7 +83,29 @@ skipped.
 **To change your answers later**: `gcx setup <cluster> --menu`. It re-asks the
 menu with your current answers as defaults, then applies them.
 
-## 4. Use it
+## 4. The watcher (setup offers it)
+
+At the end of your first `gcx setup`, you are asked whether to install a
+background watcher on your laptop. Say yes, especially if any of your clusters
+block cron: Delta, DeltaAI, Derecho and Polaris do. On those, nothing on the
+cluster restarts the endpoint when a login node reboots.
+
+Every 30 minutes the watcher checks each endpoint's status with Globus (no
+jobs, no charges):
+
+- **"restarted it over SSH"**: it fixed an offline endpoint itself.
+- **"Run: gcx login <cluster>"**: an endpoint is offline and your SSH
+  connection has expired. Log in; the next check restarts it.
+- **"offline … although cron keeps it alive"**: something is wrong with the
+  cluster-side keepalive. Run `gcx doctor <cluster>`.
+
+There is one watcher for all your clusters; clusters you set up later are
+covered automatically. `gcx watch status` shows it, `gcx watch install` adds
+it later, and `gcx watch uninstall` removes it. On macOS it is a launchd
+agent; on Linux, a systemd user timer, or crontab where systemd isn't
+available.
+
+## 5. Use it
 
 ```bash
 gcx delta jobs
@@ -100,7 +122,7 @@ gcx doctor delta            # every check for one cluster
 | 75 | Network dropped after a `submit`, `cancel` or `sh` may have been sent. Check `jobs` before retrying. |
 | 69 | The endpoint is offline and gcx could not restart it. Run `gcx login <c>` and retry. |
 
-## Claude Code and other agents
+## 6. Claude Code and other agents
 
 Setup writes `~/.claude/skills/gcx/SKILL.md`, regenerated from your config,
 so every Claude Code session in every repo knows:

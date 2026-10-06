@@ -268,6 +268,47 @@ set in the endpoint worker's environment. Setup therefore resolves them into
 literal paths from the probe when it builds the policy. Only `$USER` and
 `$HOME` stay symbolic.
 
+## Laptop watcher
+
+On clusters without cron (Delta, DeltaAI, Derecho, Polaris), nothing on the
+cluster restarts the endpoint after a login-node reboot. A reboot also kills
+the SSH connection pinned to that node, so restarting it needs a fresh login.
+The watcher (`watch.py`, `gcx watch`) shortens that gap and tells you when
+it needs you.
+
+- **Every 30 minutes** (launchd `StartInterval`, which runs a missed interval
+  on wake; or a systemd user timer with `Persistent=true`; or crontab), it
+  asks the Globus service for each endpoint's status. No task runs on any
+  cluster.
+- **What it does depends on the keepalive mode:**
+  - `on-use` + SSH up: restart through `restart.ensure_online`, with the same
+    guards as a gcx call (offline twice, live master, no copy on the node);
+  - `on-use` + SSH down: notify `gcx login <c>`;
+  - cron modes: notify only after 10 minutes offline, and **never restart**,
+    which would race the cron keepalive;
+  - `none`: notify `gcx setup <c>`.
+- **No nagging:** it notifies only for an outage not yet reported, and once
+  a day while it lasts. "Back online" is announced only for an outage that
+  was reported, so a short cron restart stays silent. State is kept in
+  `~/.config/gcx/watch-state.json`, and every pass is logged to `watch.log`
+  beside it.
+- **Installation:** `gcx setup`'s final step offers it once. There is one
+  watcher for all clusters, and it reads the configured clusters on every
+  run, so a later setup never needs to re-install it. Agents may run
+  `gcx watch status` but never install or uninstall it.
+
+Verified on macOS, 2026-10-06:
+
+- a real pass covering all seven clusters took 2 s;
+- launchd runs it at load and then on schedule (checked with a 2-minute
+  interval, then reset to 30);
+- a desktop notification fired;
+- uninstall and reinstall work, and setup's last step reports the installed
+  watcher.
+
+The decision logic, notification de-duplication, scheduler files and setup
+offer are unit-tested on Linux and macOS in CI.
+
 ## Submission safety
 
 `globus_sdk`'s transport retries **any** network error up to 5 times, POSTs

@@ -88,6 +88,7 @@ gcx <cluster> sh '<command>'               # only where shell is enabled
 gcx doctor                                 # health check of every cluster (-v: all checks)
 gcx doctor <cluster>                       # every check for one cluster
 gcx status <cluster>                       # which login node holds the endpoint
+gcx watch status                           # the laptop watcher: last check per cluster
 ```
 
 - Paths are relative to your cluster home unless absolute. Quote `~` and
@@ -101,6 +102,30 @@ gcx status <cluster>                       # which login node holds the endpoint
 | 2, "gcx refused" | Outside what you allowed for this cluster; change it with `gcx setup <cluster> --menu`. |
 | 75 | The network dropped after a `submit`, `cancel` or `sh` may have been sent. Check `jobs` before retrying. |
 | 69 | The endpoint is offline and could not be restarted. Run `gcx login <cluster>` and retry. |
+
+## Staying online
+
+Each endpoint is kept alive on the cluster where the site allows it:
+
+- **Cron allowed** (midway3, stampede3, dsi): cron restarts the endpoint, and
+  fails over to a second login node where there is one.
+- **No cron** (delta, deltaai, derecho, polaris): nothing on the cluster can
+  restart it after a login-node reboot. The next `gcx` call restarts it over
+  SSH, if your SSH connection is up.
+
+`gcx watch install` adds a small watcher on your laptop: launchd on macOS, a
+systemd user timer (or crontab) on Linux. Every 30 minutes it asks Globus
+whether each endpoint is online; that is one status call per cluster, with no
+tasks and nothing billed.
+
+- **An endpoint on a no-cron cluster is offline:** it restarts it if your SSH
+  connection is up; otherwise it sends a desktop notification naming the
+  `gcx login <cluster>` to run.
+- **A cron-kept endpoint stays down for 10 minutes:** it alerts you.
+
+It notifies only when something changes, plus one daily reminder while
+something stays down. `gcx setup` offers to install it, and
+`gcx watch status` shows its last check and log.
 
 ## Supported clusters
 

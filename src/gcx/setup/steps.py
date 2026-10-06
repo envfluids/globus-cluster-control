@@ -469,7 +469,30 @@ def run(cluster, dry_run=False, assume_yes=False, test_job=None, menu_again=Fals
     rc = doctor.main(c.get_client(), cluster)
     if rc == 0 and test_job is not False:
         rc = run_test_job(c, ask_first=test_job is None)
+    offer_watcher(c, assume_yes)
     return rc
+
+
+def offer_watcher(c, assume_yes):
+    """Final step: the laptop watcher (one for all clusters, so only offered once)."""
+    from gcx import watch
+    if watch.installed():
+        print(f"  {OK:7s} {'watcher':16s} installed; it covers {c.cluster} from its next run")
+        return
+    mode = c.cfg.get("keepalive", {}).get("mode")
+    why = ("Nothing on this cluster restarts the endpoint after a login-node reboot; "
+           "the watcher restarts it over SSH or tells you to `gcx login`."
+           if mode == "on-use" else
+           "It alerts you if an endpoint stays offline, on any of your clusters.")
+    print(f"\n{why}")
+    if not (assume_yes or sys.stdin.isatty()):
+        print("  (no terminal: install it later with `gcx watch install`)")
+        return
+    if c.ask.confirm(f"Install the background watcher (every {watch.INTERVAL_MIN} min)?", True):
+        kind = watch.install()
+        print(f"  {'done':7s} {'watcher':16s} installed ({kind}); `gcx watch status` shows it")
+    else:
+        print("  skipped; `gcx watch install` adds it later")
 
 
 def done(history, sched):
