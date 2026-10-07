@@ -343,6 +343,34 @@ landed on derecho2, while the endpoint ran on derecho6.
 The keepalive script is unaffected: it only stops an endpoint running on its
 own node.
 
+**Second copy started by setup (Derecho, 2026-10-06).** A later `gcx setup
+derecho` landed on derecho5 while the endpoint ran on derecho2.
+
+- **What went wrong:** the `running` step looked only at derecho5's process
+  list and started a second manager there. Its first task then failed with
+  "Another instance of this endpoint is running (Perhaps on another login
+  node?)": the user-endpoint worker's `daemon.pid` in the shared home,
+  `uep.<id>.<hash>/daemon.pid`, belonged to derecho2. `doctor` crashed setup
+  with a traceback.
+- **How it recovered:** both managers then exited. Intra-cluster SSH, which
+  Derecho allows without MFA, confirmed no copy remained on derecho2.
+- **Fixes:**
+  - **`running` asks Globus first.** If the endpoint is online it runs on
+    another node, and setup leaves it alone.
+  - **The keepalive lease counts only on cron clusters.** Without cron,
+    setup's own start writes the lease once, and it stays "fresh" for
+    6 minutes after the endpoint dies.
+  - **Every start clears this endpoint's pid files,** the manager's and its
+    workers' (`restart.clear_pidfiles_cmd`, and `clear_pidfiles` in
+    `keepalive.sh`), matched by endpoint ID so other endpoints are
+    untouched. Each start path runs only once the endpoint is known not to
+    run anywhere.
+  - **`doctor` reports an endpoint error as a FAIL** with a hint, not a
+    traceback.
+- **Repair:** after the fix, `gcx setup derecho` started one copy on
+  derecho5, and a re-run left it alone. The updated keepalive was deployed to
+  midway3 and stampede3; dsi gets it at its next setup.
+
 ## Submission safety
 
 `globus_sdk`'s transport retries **any** network error up to 5 times, POSTs

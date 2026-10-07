@@ -56,9 +56,18 @@ claim() {
   return 0
 }
 
-start() {
-  # daemon.pid lives in shared home and may hold a pid from the other node.
+# This endpoint's id, for its user-endpoint workers' pid files (uep.<id>.<hash>).
+epid() { sed -n 's/.*"endpoint_id": *"\([^"]*\)".*/\1/p' "$EPDIR/endpoint.json" 2>/dev/null; }
+clear_pidfiles() {
+  # The manager's and workers' pid files live in the shared home and may hold
+  # pids from another node: a new start would refuse ("Another instance ...").
   rm -f "$EPDIR/daemon.pid"
+  id=$(epid); [ -n "$id" ] && rm -f "$HOME"/.globus_compute/uep."$id".*/daemon.pid
+  return 0
+}
+
+start() {
+  clear_pidfiles
   if "$GCE" start --detach "$EP" >>"$LOG" 2>&1 && sleep "$SETTLE" && running; then
     claim; say "started endpoint ($1)"
   else
@@ -87,7 +96,7 @@ if running && [ -e "$STATE/restart-request" ]; then
   "$GCE" stop "$EP" >>"$LOG" 2>&1
   sleep $(( SETTLE / 2 ))
   running && pkill -u "$USER" -f "^Globus Compute Endpoint .*, $EP\)"
-  rm -f "$EPDIR/daemon.pid"
+  clear_pidfiles
   claim
   if "$GCE" start --detach "$EP" >>"$LOG" 2>&1 && sleep "$SETTLE" && running; then
     claim; say "restarted endpoint (requested)"

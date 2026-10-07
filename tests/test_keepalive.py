@@ -166,3 +166,20 @@ def test_single_mode_restarts_dead_endpoint(tmp_path):
     assert "started endpoint (not running)" in c.tick("dsi-fe01")[1]
     rc, out = c.tick("dsi-fe02")
     assert rc == 1 and "has no role" in out
+
+
+def test_start_clears_stale_worker_pid_files(tmp_path):
+    # A worker pid file left in the shared home by another node made the next
+    # start refuse ("Another instance of this endpoint is running").
+    c = Cluster(tmp_path, "single", "derecho5")
+    epdir = c.home / ".globus_compute" / "ep"
+    epdir.mkdir(parents=True)
+    (epdir / "endpoint.json").write_text('{"endpoint_id": "c9c8"}')
+    mine = c.home / ".globus_compute" / "uep.c9c8.abc"
+    other = c.home / ".globus_compute" / "uep.ffff.abc"
+    for d in (mine, other):
+        d.mkdir()
+        (d / "daemon.pid").write_text("529741")
+    assert "started endpoint" in c.tick("derecho5")[1]
+    assert not (mine / "daemon.pid").exists()
+    assert (other / "daemon.pid").exists()  # another endpoint's worker: untouched

@@ -33,12 +33,26 @@ def _master_up(alias):
                           stdin=subprocess.DEVNULL).returncode == 0
 
 
+def clear_pidfiles_cmd(ep_name, endpoint_id):
+    """Shell: remove this endpoint's pid files from the shared home.
+
+    The endpoint writes daemon.pid for itself and for each user-endpoint
+    worker (~/.globus_compute/uep.<endpoint id>.<hash>/daemon.pid). In a home
+    shared by several login nodes, a pid file left by another node makes a
+    new start refuse ("Another instance of this endpoint is running. Perhaps
+    on another login node?") or act on an unrelated process. Only call this
+    once the endpoint is known not to run anywhere.
+    """
+    uep = f"~/.globus_compute/uep.{endpoint_id}.*/daemon.pid" if endpoint_id else ""
+    return f"rm -f ~/.globus_compute/{ep_name}/daemon.pid {uep}"
+
+
 def start_cmd(cfg):
     root, ep = cfg.get("remote_root", "~/.gcx"), cfg.get("endpoint_name", "gcx")
     gce = f"{root}/venv/bin/globus-compute-endpoint"
     return (f'pgrep -u "$USER" -f "^Globus Compute Endpoint .*, {ep}\\)" >/dev/null '
             f"&& {{ echo already-running-here; exit 0; }}; "
-            f"cd ~ && rm -f ~/.globus_compute/{ep}/daemon.pid && {gce} start --detach {ep} "
+            f"cd ~ && {clear_pidfiles_cmd(ep, cfg.get('endpoint'))} && {gce} start --detach {ep} "
             f"&& echo started-on-$(hostname -s)")
 
 
