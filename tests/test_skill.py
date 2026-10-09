@@ -18,3 +18,13 @@ def test_skill_lists_each_cluster_and_its_policy(tmp_path, monkeypatch):
     assert "### polaris (ALCF Polaris, pbs)" in text and "gcx login polaris" in text
     assert "Never run the commands that need the human" in text
     assert skill.install(quiet=True).read_text() == text  # idempotent
+
+
+def test_skill_describes_run_launchers(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path / "cfg")
+    config.save("midway3", {"endpoint": "e", "keepalive": {"mode": "failover"}, "policy": {
+        "scheduler": "slurm", "capabilities": ["status", "run"], "accounts": ["pi-a"],
+        "queues": ["caslake"], "launchers": [{"root": "~/repo", "argv": ["uv", "run", "s.py"]}]}})
+    text = skill.render()
+    assert "`run [-A ACCT]" in text and "`~/repo` (launcher `uv run s.py`)" in text
+    assert "`pi-a`" in text and "Submit scripts from" not in text

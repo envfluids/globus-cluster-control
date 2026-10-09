@@ -82,6 +82,7 @@ gcx <cluster> jobs                         # your queued and running jobs
 gcx <cluster> history --since 2026-10-01   # finished jobs
 gcx <cluster> queues
 gcx <cluster> submit ~/runs/job.sbatch -A <account> -p <queue> -t 01:00:00
+gcx <cluster> run ~/repo/scripts/slurm/smoke.sh test/models/foo   # templated, see below
 gcx <cluster> cancel <job-id>
 gcx <cluster> tail ~/runs/job.out -n 100   # also: head, ls, du
 gcx <cluster> sh '<command>'               # only where shell is enabled
@@ -100,7 +101,7 @@ gcx watch status                           # the laptop watcher: last check per 
 | Exit code | Meaning |
 |---|---|
 | 2, "gcx refused" | Outside what you allowed for this cluster; change it with `gcx setup <cluster> --menu`. |
-| 75 | The network dropped after a `submit`, `cancel` or `sh` may have been sent. Check `jobs` before retrying. |
+| 75 | The network dropped after a `submit`, `run`, `cancel` or `sh` may have been sent. Check `jobs` before retrying. |
 | 69 | The endpoint is offline and could not be restarted. Run `gcx login <cluster>` and retry. |
 
 ## Staying online
@@ -138,6 +139,21 @@ involved.
 
 Adding a cluster means adding a profile. Setup learns everything else by
 probing the cluster.
+
+## Templated runs
+
+`gcx <cluster> run SCRIPT [ARGS...]` is for repos that build their batch
+scripts per cluster, like a `submit.py --dry-run` that writes the `#SBATCH`
+header from a cluster config. gcx runs that launcher on the cluster, checks
+the rendered header's account and partition (both required) and refuses a few
+risky options (`--wrap`, `--export`, `--uid`/`--gid`, `--get-user-env`).
+Then it submits the script with ARGS as its `"$@"`. gcx options (`-A -p -q -t
+-J --after --json`) go before SCRIPT; everything after it is the script's.
+
+It is off by default and Slurm-only. Turn it on with `gcx setup <cluster>
+--menu` by giving each repo's root and launcher command, e.g.
+`uv run --frozen python scripts/slurm/submit.py --cluster midway --dry-run`.
+Details: [docs/design.md](docs/design.md#templated-runs).
 
 ## AI agents
 

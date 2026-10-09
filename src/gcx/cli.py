@@ -4,6 +4,9 @@
     gcx <cluster> history [ID ...] [--since DATE]  finished jobs (sacct / qstat -x)
     gcx <cluster> queues                           partitions / queues
     gcx <cluster> submit SCRIPT [-A ACCT] [-p QUEUE] [-q QOS] [-t TIME] [--after ID ...] [-J NAME]
+    gcx <cluster> run [-A ACCT] [-p QUEUE] [-q QOS] [-t TIME] [--after ID ...] [-J NAME] SCRIPT [ARGS ...]
+                                     render SCRIPT with its repo's launcher, check it, submit;
+                                     ARGS become the script's "$@" (gcx options go before SCRIPT)
     gcx <cluster> cancel ID [ID ...]
     gcx <cluster> ls [PATH]          gcx <cluster> du [PATH] [-d N]
     gcx <cluster> tail PATH [-n N]   gcx <cluster> head PATH [-n N]
@@ -25,7 +28,7 @@ Paths are relative to your cluster home unless absolute; ~ and $VARS expand on
 the cluster (an unquoted ~ that your laptop shell expanded is mapped back). Add --json for machine-readable output, --no-wait to print the
 task id and return.
 
-A network drop costs a retry, not a re-login. submit, cancel and sh are sent
+A network drop costs a retry, not a re-login. submit, run, cancel and sh are sent
 at-most-once: if the connection drops after the request may have been sent,
 gcx exits 75 rather than risk running it twice; check `jobs` before retrying.
 """
@@ -68,6 +71,16 @@ def _verbs():
         p.add_argument("--after", nargs="+", metavar="ID", help="start after these jobs succeed")
         p.add_argument("-J", "--job-name")
 
+    def run(p):
+        p.add_argument("-A", "--account")
+        p.add_argument("-p", "--queue", "--partition", dest="queue")
+        p.add_argument("-q", "--qos")
+        p.add_argument("-t", "--walltime")
+        p.add_argument("--after", nargs="+", metavar="ID", help="start after these jobs succeed")
+        p.add_argument("-J", "--job-name")
+        p.add_argument("script")
+        p.add_argument("args", nargs=argparse.REMAINDER, help="passed to the script as \"$@\"")
+
     def lines(p):
         p.add_argument("path")
         p.add_argument("-n", "--lines", type=int, default=200)
@@ -95,6 +108,9 @@ def _verbs():
         "submit": ("gcx_submit", submit, lambda a: {
             "script": a.script, "account": a.account, "queue": a.queue, "qos": a.qos,
             "walltime": a.walltime, "depends_on": a.after, "job_name": a.job_name}),
+        "run": ("gcx_run", run, lambda a: {
+            "script": a.script, "args": a.args, "account": a.account, "queue": a.queue,
+            "qos": a.qos, "walltime": a.walltime, "depends_on": a.after, "job_name": a.job_name}),
         "cancel": ("gcx_cancel", lambda p: p.add_argument("ids", nargs="+"),
                    lambda a: {"job_ids": a.ids}),
         "ls": ("gcx_ls", path, lambda a: {"path": a.path}),
@@ -178,11 +194,14 @@ def render(verb, res, as_json, scheduler="slurm"):
         if res.get("truncated"):
             print("[gcx] listing truncated", file=sys.stderr)
         return 0
-    if verb == "submit" and res.get("rc") == 0:
+    if verb in ("submit", "run") and res.get("rc") == 0:
         job = job_id_of(res, scheduler)
         if job:
             print(job)
             sys.stderr.write(res.get("stderr", ""))
+            for key in ("output", "error"):
+                if res.get(key):
+                    print(f"[gcx] {key}: {res[key]}", file=sys.stderr)
             return 0
     sys.stdout.write(res.get("stdout", ""))
     sys.stderr.write(res.get("stderr", ""))
@@ -433,7 +452,7 @@ def main(argv=None, prog="gcx"):
         p.add_argument("--no-wait", action="store_true", help="print the task id and return")
         a = p.parse_args(rest[1:])
         kwargs = VERBS[verb][2](a)
-        if verb == "submit" and kwargs.get("account"):
+        if verb in ("submit", "run") and kwargs.get("account"):
             kwargs["account"] = _account_spelling(cluster, kwargs["account"])
         for k in PATH_ARGS:
             if isinstance(kwargs.get(k), str):

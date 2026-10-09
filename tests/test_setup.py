@@ -174,9 +174,9 @@ def test_accounts_still_replace_but_are_confirmed(monkeypatch):
 
 
 def test_full_menu_with_typed_answers(monkeypatch):
-    # submit? read? shell? | read dirs: add, confirm | script dirs: Enter, confirm
+    # submit? run? read? shell? | read dirs: add, confirm | script dirs: Enter, confirm
     # | accounts: Enter, confirm | queues: Enter, confirm | qos: Enter, confirm
-    typed(monkeypatch, "y", "y", "n", "/net/monsoon", "", "", "", "", "", "", "", "", "")
+    typed(monkeypatch, "y", "n", "y", "n", "/net/monsoon", "", "", "", "", "", "", "", "", "")
     c = ctx()
     pol = menu.build_policy("midway3", c.prof, c.facts, c.root, menu.Prompter())
     assert pol["read_roots"] == ["~", "/scratch/midway3/$USER", "/net/monsoon"]
@@ -274,9 +274,40 @@ def test_trailing_slash_is_not_a_new_directory(monkeypatch):
 def test_menu_again_prefills_current_answers(monkeypatch):
     cur = {"scheduler": "slurm", "capabilities": ["status", "read"],
            "read_roots": ["~", "/net/monsoon"]}
-    # submit? (default now no) read? (yes) shell? (no) | read dirs: add one, confirm
-    typed(monkeypatch, "", "", "", "/net/scratch/$USER", "")
+    # submit? (default now no) run? (no) read? (yes) shell? (no) | read dirs: add one, confirm
+    typed(monkeypatch, "", "", "", "", "/net/scratch/$USER", "")
     c = ctx()
     pol = menu.build_policy("dsi", c.prof, c.facts, c.root, menu.Prompter(), current=cur)
     assert pol["capabilities"] == ["status", "read"]
     assert pol["read_roots"] == ["~", "/net/monsoon", "/net/scratch/$USER"]
+
+
+def test_run_menu_adds_a_launcher_and_asks_accounts(monkeypatch):
+    # submit? run? read? shell? | add launcher? root, command, block risky?, add another?
+    # | accounts: Enter, confirm | queues: type, confirm | qos: Enter, confirm
+    typed(monkeypatch, "n", "y", "n", "n",
+          "y", "~/repo", "uv run --frozen python submit.py --dry-run", "", "n",
+          "", "", "caslake", "", "", "")
+    c = ctx()
+    pol = menu.build_policy("midway3", c.prof, c.facts, c.root, menu.Prompter())
+    assert pol["capabilities"] == ["status", "run"]
+    assert pol["launchers"] == [{"root": "~/repo", "block_risky": True,
+                                 "argv": ["uv", "run", "--frozen", "python", "submit.py", "--dry-run"]}]
+    assert pol["accounts"] == ["pi-a", "pi-b"] and pol["queues"] == ["caslake"]
+    assert "script_roots" not in pol
+    build.validate(pol)
+
+
+def test_run_without_launchers_is_turned_off(capsys):
+    c = ctx()  # --yes: no launchers can be typed
+    pol = menu.build_policy("midway3", c.prof, c.facts, c.root, menu.Prompter(True),
+                            current={"scheduler": "slurm", "capabilities": ["status", "run"]})
+    assert "run" not in pol["capabilities"] and "launchers" not in pol
+    assert "templated runs stay off" in capsys.readouterr().out
+
+
+def test_run_not_offered_on_pbs(capsys):
+    prof = profiles.load("derecho")
+    c = ctx(prof=prof, facts={"scheduler": "pbs", "accounts": "", "groups": "uchi0014"})
+    menu.build_policy("derecho", prof, c.facts, c.root, c.ask)
+    assert "Templated runs" not in capsys.readouterr().out

@@ -17,9 +17,11 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 
 POLICY = {}  # replaced at registration; see build.py
@@ -206,6 +208,197 @@ def gcx_submit(script, account=None, queue=None, walltime=None, depends_on=None,
         res = _run(argv + [path], cwd=os.path.dirname(path))
         if res["rc"] == 0:
             res["job_id"] = _job_id(res["stdout"], slurm)
+        return res
+    return _guard(go)
+
+
+# ---- templated runs (Slurm) -------------------------------------------------
+#
+# gcx_run renders a repo script with the repo's own launcher (a command that
+# prints the finished batch script, e.g. `submit.py --dry-run`), checks the
+# rendered #SBATCH header against the policy, and submits it with the
+# request's arguments as the script's "$@". The request picks only the script,
+# its arguments and the same validated overrides as gcx_submit.
+
+# #SBATCH options refused in rendered scripts unless the launcher sets
+# "block_risky": false. Each changes who the job runs as or what it runs,
+# rather than what resources it gets, so a template mistake or a tampered
+# template reaches past the job itself:
+#   --wrap          replaces the script body with an inline command string;
+#   --export(-file) sets or overrides the job's environment (PATH, LD_PRELOAD,
+#                   PYTHONPATH), changing what code actually runs;
+#   --uid / --gid   ask Slurm to run the job as another user or group;
+#   --get-user-env  loads a fresh login environment that nobody reviewed.
+RISKY_SBATCH = ("--wrap", "--export", "--export-file", "--uid", "--gid", "--get-user-env")
+MAX_ARGS = 64
+MAX_ARGS_BYTES = 4096
+
+# The header options gcx reads: long name -> short flag.
+SBATCH_TRACKED = {"--account": "-A", "--partition": "-p", "--qos": "-q", "--job-name": "-J",
+                  "--output": "-o", "--error": "-e"}
+
+
+def _long_match(name, full):
+    """sbatch accepts unambiguous prefixes of long options (--part for --partition).
+    Ambiguous prefixes are rejected by sbatch, so matching them too only errs strict."""
+    return len(name) > 2 and full.startswith(name)
+
+
+def _header(text):
+    """The #SBATCH options sbatch would read: from the top of the script up to the
+    first line that is neither blank nor a comment."""
+    tokens = []
+    for line in text.splitlines():
+        s = line.strip()
+        if s and not s.startswith("#"):
+            break
+        if s.startswith("#SBATCH"):
+            try:
+                tokens += shlex.split(s[len("#SBATCH"):], comments=True)
+            except ValueError as e:
+                raise Refused("cannot parse header line " + repr(s) + ": " + str(e))
+    return tokens
+
+
+def _sbatch_options(tokens, block_risky):
+    """{long name: value} for the tracked options (last wins, as in sbatch)."""
+    shorts = {v: k for k, v in SBATCH_TRACKED.items()}
+    found = {}
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        i += 1
+        if tok.startswith("--"):
+            name, eq, value = tok.partition("=")
+            if block_risky and any(_long_match(name, r) for r in RISKY_SBATCH):
+                raise Refused("rendered script uses " + name + ", which this launcher blocks "
+                              "(it changes who the job runs as or what it runs)")
+            for full in SBATCH_TRACKED:
+                if _long_match(name, full):
+                    if not eq:
+                        value = tokens[i] if i < len(tokens) else ""
+                        i += 1
+                    found[full] = value
+                    break
+        elif tok[:2] in shorts:
+            if len(tok) > 2:
+                found[shorts[tok[:2]]] = tok[2:]
+            else:
+                found[shorts[tok]] = tokens[i] if i < len(tokens) else ""
+                i += 1
+    return found
+
+
+def _launcher_for(script):
+    """The launcher whose root holds script, and the resolved script path."""
+    if not isinstance(script, str) or not script or "\x00" in script:
+        raise Refused("bad path")
+    full = os.path.expandvars(os.path.expanduser(script))
+    if not os.path.isabs(full):
+        full = os.path.join(os.path.expanduser("~"), full)
+    real = os.path.realpath(full)
+    best = None
+    for launcher in POLICY.get("launchers", []):
+        r = _expand(launcher["root"])
+        if os.path.commonpath([real, r]) == r and (best is None or len(r) > len(best[1])):
+            best = (launcher, r)
+    if best is None:
+        roots = ", ".join(l["root"] for l in POLICY.get("launchers", []))
+        raise Refused(script + " is not under a launcher root (" + roots + ")")
+    return best[0], best[1], real
+
+
+def _script_args(args):
+    if args is None:
+        return []
+    if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+        raise Refused("script arguments must be a list of strings")
+    if len(args) > MAX_ARGS:
+        raise Refused("at most " + str(MAX_ARGS) + " script arguments")
+    if sum(len(a.encode()) for a in args) > MAX_ARGS_BYTES:
+        raise Refused("script arguments exceed " + str(MAX_ARGS_BYTES) + " bytes")
+    if any("\x00" in a for a in args):
+        raise Refused("script arguments may not contain NUL")
+    return list(args)
+
+
+def _log_path(pattern, root, job_id, job_name):
+    """Absolute log path with the common % patterns filled in (%A, %a, ... stay)."""
+    path = pattern if os.path.isabs(pattern) else os.path.join(root, pattern)
+    for key, value in (("%j", job_id or "%j"), ("%x", job_name), ("%u", _user())):
+        path = path.replace(key, value)
+    return path
+
+
+def _make_log_dir(pattern, root):
+    """sbatch does not create log directories; create them, but only inside root."""
+    d = os.path.dirname(pattern if os.path.isabs(pattern) else os.path.join(root, pattern))
+    if d and "%" not in d:
+        real = os.path.realpath(d)
+        if os.path.commonpath([real, root]) == root:
+            os.makedirs(real, exist_ok=True)
+
+
+def gcx_run(script, args=None, account=None, queue=None, walltime=None, depends_on=None,
+            job_name=None, qos=None):
+    def go():
+        _require("run")
+        launcher, root, path = _launcher_for(script)
+        if not os.path.isfile(path):
+            raise Refused(script + " is not a file")
+        argv_extra = _script_args(args)
+        deps = _ids(depends_on)
+        if job_name is not None and not NAME.match(str(job_name)):
+            raise Refused("job name must match " + NAME.pattern)
+        if walltime is not None and not SLURM_TIME.match(str(walltime)):
+            raise Refused("bad walltime " + repr(walltime))
+        cmd = [os.path.expanduser(a) if a.startswith("~/") else a for a in launcher["argv"]]
+        rendered = _run(cmd + [path], cwd=root, timeout=launcher.get("timeout"))
+        if rendered["rc"] != 0:
+            rendered["stderr"] = "launcher failed:\n" + rendered["stderr"]
+            return rendered
+        text = rendered["stdout"]
+        if rendered.get("truncated") or not text.startswith("#!"):
+            raise Refused("launcher output is not a complete batch script (must start with #!)")
+        found = _sbatch_options(_header(text), launcher.get("block_risky", True))
+
+        acct = account if account is not None else found.get("--account")
+        part = queue if queue is not None else found.get("--partition")
+        qq = qos if qos is not None else found.get("--qos")
+        if not acct:
+            raise Refused("no account: the rendered script sets none; pass -A")
+        if not part:
+            raise Refused("no partition: the rendered script sets none; pass -p")
+        _choice(acct, "accounts", "account")
+        _choice(part, "queues", "queue")
+        _choice(qq, "qos", "qos")
+        name = job_name or found.get("--job-name") or os.path.basename(path)
+        if not NAME.match(name):
+            raise Refused("job name must match " + NAME.pattern)
+
+        for key in ("--output", "--error"):
+            if found.get(key):
+                _make_log_dir(found[key], root)
+        fd, tmp = tempfile.mkstemp(prefix="gcx-run-", suffix=".sh")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(text)
+            # Overrides go on the command line, where they beat the header.
+            argv = ["sbatch", "--parsable", "-A", acct, "-p", part]
+            argv += ["--qos", qq] if qq else []
+            argv += ["-t", str(walltime)] if walltime else []
+            argv += ["--dependency=afterok:" + ":".join(deps)] if deps else []
+            argv += ["-J", name]  # otherwise the job is named after the temp file
+            argv += list(POLICY.get("submit_extra", []))
+            res = _run(argv + [tmp] + argv_extra, cwd=root)
+        finally:
+            os.unlink(tmp)  # sbatch keeps its own copy
+        if res["rc"] == 0:
+            res["job_id"] = _job_id(res["stdout"], True)
+            out = found.get("--output") or "slurm-%j.out"
+            res["output"] = _log_path(out, root, res["job_id"], name)
+            if found.get("--error"):
+                res["error"] = _log_path(found["--error"], root, res["job_id"], name)
         return res
     return _guard(go)
 

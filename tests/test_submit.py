@@ -117,3 +117,22 @@ def test_job_id_found_after_a_site_banner():
     assert job_id_of({"stdout": "4242;midway3\n"}, "slurm") == "4242"
     assert job_id_of({"stdout": "4242.polaris-pbs-01\n"}, "pbs") == "4242.polaris-pbs-01"
     assert job_id_of({"stdout": "no id here\n"}, "slurm") is None
+
+
+def test_run_cli_passes_everything_after_script_to_it(monkeypatch, capsys):
+    from gcx import cli
+    sent = {}
+    monkeypatch.setattr(cli, "call", lambda cluster, verb, kwargs, **kw: sent.update(kwargs) or 0)
+    with pytest.raises(SystemExit):
+        cli.main(["midway3", "run", "-t", "00:30:00", "--json", "repo/smoke.sh",
+                  "-k", "foo", "--json", "-t", "x"])
+    assert sent["script"] == "repo/smoke.sh" and sent["walltime"] == "00:30:00"
+    assert sent["args"] == ["-k", "foo", "--json", "-t", "x"]  # the script's, not gcx's
+
+
+def test_run_result_prints_job_id_and_log_path(capsys):
+    from gcx.cli import render
+    rc = render("run", {"rc": 0, "stdout": "4242\n", "stderr": "", "job_id": "4242",
+                        "output": "/home/a/repo/logs/smoke-4242.out"}, as_json=False)
+    out, err = capsys.readouterr()
+    assert rc == 0 and out == "4242\n" and "[gcx] output: /home/a/repo/logs/smoke-4242.out" in err

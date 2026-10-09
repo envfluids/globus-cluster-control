@@ -41,6 +41,7 @@ The code is exec'd under 3.9 and 3.13 in `tests/test_source_compat.py`.
 |---|---|---|
 | status (always on) | `gcx_ping`, `gcx_jobs`, `gcx_history`, `gcx_queues` | `scheduler` |
 | submit | `gcx_submit`, `gcx_cancel` | `script_roots`, `accounts`, `queues`, `qos`, `submit_extra` |
+| run (opt-in, Slurm) | `gcx_run` | `launchers`, `accounts`, `queues`, `qos`, `submit_extra` |
 | read | `gcx_ls`, `gcx_read` (tail/head), `gcx_du` | `read_roots` |
 | shell (opt-in) | `gcx_shell` | none; cancels every other restriction |
 
@@ -54,12 +55,61 @@ How each request is restricted:
   with its own directory as the working directory. The only flags are
   account, queue, QoS, walltime, dependency and job name, each validated;
   `--wrap`, `-o` and `--export` are unreachable.
+- **Run** renders a script with its repo's own launcher, then submits the
+  result (see Templated runs below).
 - **Cancel** uses `scancel -u $USER`, so only your own jobs can be cancelled.
 - **Output** is capped at 1 MB.
 
 **Registered code cannot be changed**, so a policy can only be widened by
 registering new functions *and* putting their IDs on the endpoint's
 allowlist, which takes SSH access to the cluster.
+
+### Templated runs
+
+`gcx_submit` cannot take per-request parameters: no script arguments, no
+`--export`, no way to write a file. `gcx_run` fills that gap for repos that
+already template their batch scripts, such as laude-finetuning's
+`scripts/slurm/submit.py`, which builds each cluster's `#SBATCH` header from a
+cluster TOML.
+
+A launcher is `{root, argv, timeout, block_risky}` in the policy. For
+`gcx <c> run SCRIPT ARGS...`:
+
+1. SCRIPT must resolve (realpath) inside a launcher's `root`; the longest
+   matching root wins. ARGS are at most 64 strings, 4 KB in all, no NUL.
+2. The launcher runs from `root` as `argv + [SCRIPT]` and must print the
+   finished batch script (starting with `#!`) on stdout.
+3. gcx reads the `#SBATCH` header the way sbatch does: top of the file up to
+   the first command, accepting abbreviated long options. Request overrides
+   (`-A -p -q -t -J --after`) beat the header. The resulting account and
+   partition must be **present** and allowed, and QoS allowed if set.
+4. The script goes to a private temp file and is submitted as
+   `sbatch --parsable -A ACCT -p PART [...] -J NAME TMP ARGS...` from `root`,
+   at-most-once like `submit`. Account and partition are always on the
+   command line, so a header gcx misread cannot charge an unchecked account.
+   The job is named after SCRIPT, not the temp file, unless a name is set.
+5. Missing `--output`/`--error` directories are created only inside `root`.
+   The result carries the job ID and log paths with `%j`, `%x`, `%u` filled in.
+
+The request controls only which script runs, its `"$@"` and the overrides.
+The script content is trusted the way `submit` trusts `script_roots`.
+
+**Risky options.** Unless a launcher sets `block_risky: false`, a rendered
+header using any of these is refused:
+
+- `--wrap` swaps the script body for an inline command string;
+- `--export` / `--export-file` set the job's environment (`PATH`,
+  `LD_PRELOAD`, `PYTHONPATH`), which changes what code actually runs;
+- `--uid` / `--gid` ask Slurm to run the job as another user or group;
+- `--get-user-env` loads a fresh login environment nobody reviewed.
+
+They change who the job runs as or what it runs, not what resources it gets,
+so a template mistake or a tampered template reaches past the job itself.
+The repo script can still do anything in its body; the blocklist is defense
+in depth against headers, not a sandbox.
+
+**Not yet:** PBS (derecho, polaris); a dry-run mode that returns the rendered
+script without submitting.
 
 ### Enforcement
 
@@ -399,6 +449,10 @@ retried. The live outage test found this.
   login nodes. Globus's docs carry example configs for Delta, Stampede3 and
   Midway; site policy on long-running login-node daemons still needs checking.
   Nothing was found for Derecho, which is being retired.
+- **Submit with no `-A`/`-p`.** `gcx_submit` checks account, queue and QoS
+  only when passed as flags. Without them the script's own `#SBATCH -A`/`-p`
+  apply unchecked (the scheduler still limits you to your real allocations).
+  `gcx_run` requires both; whether `submit` should too is undecided.
 - **Cron email** from the failover test was not confirmed received.
 - **Reimage risk.** If both nodes' crontabs are wiped, nothing restarts the
   endpoint. `gcx --status` shows both heartbeats as STALE in that case.
