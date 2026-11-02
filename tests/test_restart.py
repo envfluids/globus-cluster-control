@@ -105,3 +105,10 @@ def test_restart_anywhere_refuses_if_a_copy_still_runs_here():
     with pytest.raises(restart.EndpointOffline, match="still running"):
         restart.restart_anywhere("delta", CFG, client, ssh=lambda a, c: "already-running-here",
                                  sleep=lambda s: None)
+
+
+def test_start_clears_this_endpoints_stale_pid_files_only():
+    cmd = restart.start_cmd(dict(CFG, endpoint="c9c8"))
+    assert "rm -f ~/.globus_compute/gcx/daemon.pid ~/.globus_compute/uep.c9c8.*/daemon.pid" in cmd
+    assert cmd.index("rm -f") < cmd.index("start --detach")
+    assert "uep.*" not in cmd  # never another endpoint's workers

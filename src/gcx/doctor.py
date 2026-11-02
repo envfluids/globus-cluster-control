@@ -77,7 +77,7 @@ def _line(name, passed, detail):
 
 def main(client, cluster):
     ok = True
-    for name, passed, detail in checks(client, cluster):
+    for name, passed, detail in collect(lambda: client, cluster):
         ok &= passed
         print(_line(name, passed, detail))
     return 0 if ok else 1
@@ -90,7 +90,13 @@ def collect(client_factory, cluster):
         for r in checks(client_factory(), cluster):
             results.append(r)
     except Exception as e:  # network, auth, a cluster gone missing: report, don't crash
-        results.append(("doctor finished", False, f"{type(e).__name__}: {str(e)[:120]}"))
+        text = str(e)
+        if "Another instance of this endpoint is running" in text:
+            detail = ("a second copy of the endpoint was refused (another login node holds its "
+                      f"pid files); run `gcx setup {cluster}` to clean up")
+        else:
+            detail = f"{type(e).__name__}: {text[:160]}"
+        results.append(("endpoint ran the check", False, detail))
     return results
 
 

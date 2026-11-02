@@ -27,6 +27,7 @@ from gcx.setup import menu
 from gcx.setup.remote import Remote, RemoteError
 
 OK, CHANGE, HUMAN, BLOCKED = "ok", "change", "you", "blocked"
+CRON_MODES = ("failover", "single")  # keepalive modes where cron refreshes the lease
 STALE_S = 360
 SERVICE_WAIT_S = 480
 
@@ -237,14 +238,25 @@ def _owner_fresh(c):
 def s_running(c):
     if c.facts.get("ep_running") == "yes":
         return Result(OK, f"endpoint running on {c.facts['host']}")
-    if _owner_fresh(c):
+    # A fresh lease proves something only where cron refreshes it. Without cron,
+    # setup's own start wrote it once and it stays "fresh" after the endpoint dies.
+    if c.cfg.get("keepalive", {}).get("mode") in CRON_MODES and _owner_fresh(c):
         return Result(OK, f"endpoint held by {c.facts['owner']} (keepalive lease "
                           f"{c.facts['owner_age']} s old)")
+    # Not on this node -- but on a round-robin login it may run on another one
+    # (Derecho, 2026-10-06: starting here made a second copy). Ask Globus.
+    ep_id = c.facts.get("ep_id") or c.cfg.get("endpoint")
+    if ep_id:
+        from gcx import restart
+        if restart.status(c.get_client(), ep_id) == "online":
+            return Result(OK, "endpoint running on another login node (Globus: online)")
     # Claim the keepalive lease too: on a failover cluster, the other node's cron
     # must see this node as the holder, or it would start a second endpoint.
+    from gcx.restart import clear_pidfiles_cmd
     st = c.remote.q(c.root + "/state")
-    cmd = (f"cd ~ && rm -f {c.epdir}/daemon.pid && {c.gce} start --detach {c.ep} && sleep 10 && "
-           f"mkdir -p {st} && hostname -s > {st}/owner && touch {st}/owner-is.$(hostname -s)")
+    cmd = (f"cd ~ && {clear_pidfiles_cmd(c.ep, ep_id)} && {c.gce} start --detach {c.ep} && "
+           f"sleep 10 && mkdir -p {st} && hostname -s > {st}/owner && "
+           f"touch {st}/owner-is.$(hostname -s)")
     return Result(CHANGE, f"start the endpoint on {c.facts.get('host')}",
                   lambda: c.remote.run(cmd, timeout=180))
 
@@ -301,9 +313,6 @@ def keepalive_files(c):
     script = resources.files("gcx.data").joinpath("keepalive.sh").read_text()
     # Settings first: a cron tick between the two writes then finds a complete pair.
     return {f"{c.root}/keepalive.env": env, f"{c.root}/keepalive.sh": script}
-
-
-CRON_MODES = ("failover", "single")
 
 
 def s_keepalive_files(c):
