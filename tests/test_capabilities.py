@@ -302,6 +302,17 @@ def test_run_renders_checks_and_submits_with_args(env):
     assert os.path.basename(tmp).startswith("gcx-run-") and not os.path.exists(tmp)
 
 
+def test_run_with_cat_submits_the_script_as_written(env):
+    # The setup default: no renderer, nothing needed beyond coreutils.
+    ns, repo = load_run(env, argv=["cat"])
+    res = ns["gcx_run"]("~/repo/scripts/smoke.sh", args=["a b", "c"])
+    assert res["rc"] == 0 and res["job_id"] == "4242"
+    [(cwd, sbatch)] = calls(env)  # cat is not a fake, so only sbatch is logged
+    assert cwd == str(repo.resolve())
+    assert sbatch[:6] == ["sbatch", "--parsable", "-A", "pi-good", "-p", "caslake"]
+    assert sbatch[-2:] == ["a b", "c"]
+
+
 def test_run_overrides_beat_the_header_and_are_checked(env):
     ns, _ = load_run(env)
     assert refused(ns["gcx_run"]("~/repo/scripts/smoke.sh", queue="bigmem"))

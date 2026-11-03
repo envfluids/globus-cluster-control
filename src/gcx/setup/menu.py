@@ -186,7 +186,8 @@ def choose_launchers(ask, current, facts):
     that prints the rendered batch script for the script path appended to it."""
     launchers = []
     for launcher in current:
-        if ask.confirm(f"Keep launcher {launcher['root']}: {shlex.join(launcher['argv'])}?", True):
+        if ask.confirm(f"Keep launcher {launcher['root']}: {shlex.join(launcher['argv'])} "
+                       f"({launcher.get('timeout', 120)} s)?", True):
             launchers.append(launcher)
     while not ask.yes and ask.confirm("Add a launcher?", not launchers):
         root = ask.ask("Repo root (absolute, ~/... or $VAR/...; blank to stop)", "")
@@ -198,9 +199,11 @@ def choose_launchers(ask, current, facts):
         resolved = resolve_roots([root], facts)
         if not resolved:
             continue
-        cmd = ask.ask("Launcher command, run from the root; gets the script path appended and "
-                      "prints the batch script (e.g. uv run --frozen python scripts/slurm/submit.py "
-                      "--cluster midway --dry-run)", "")
+        # The launcher runs in the endpoint's environment, not a repo's: `cat`
+        # (submit the script as written) needs nothing beyond coreutils.
+        cmd = ask.ask("Launcher command, run from the root with the script path appended; it "
+                      "prints the batch script to submit (cat: submit the script as written; "
+                      "or a renderer such as python3 tools/render.py)", "cat")
         try:
             argv = shlex.split(cmd)
         except ValueError as e:
@@ -208,10 +211,22 @@ def choose_launchers(ask, current, facts):
             continue
         if not argv:
             continue
+        timeout = ask_timeout(ask)
         block = ask.confirm("Refuse rendered scripts that use --wrap, --export, --uid, --gid or "
                             "--get-user-env? (they change who the job runs as or what it runs)", True)
-        launchers.append({"root": resolved[0], "argv": argv, "block_risky": block})
+        launchers.append({"root": resolved[0], "argv": argv, "timeout": timeout,
+                          "block_risky": block})
     return launchers
+
+
+def ask_timeout(ask, default=120):
+    """Seconds the launcher may run. It must not set up an environment (uv sync,
+    pip install) on the way: the whole run happens inside one gcx call."""
+    while True:
+        got = ask.ask("Seconds the launcher may take before gcx gives up", str(default))
+        if re.fullmatch(r"[1-9]\d{0,3}", got.strip()):
+            return int(got)
+        print(f"  not a number of seconds (1-9999): {got}")
 
 
 def _covers(roots, path):

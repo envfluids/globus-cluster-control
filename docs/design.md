@@ -67,12 +67,18 @@ allowlist, which takes SSH access to the cluster.
 ### Templated runs
 
 `gcx_submit` cannot take per-request parameters: no script arguments, no
-`--export`, no way to write a file. `gcx_run` fills that gap for repos that
-already template their batch scripts, such as laude-finetuning's
-`scripts/slurm/submit.py`, which builds each cluster's `#SBATCH` header from a
-cluster TOML.
+`--export`, no way to write a file. `gcx_run` fills that gap: it submits a
+script with arguments, optionally after rendering it with a repo's own
+template tool (one that builds each cluster's `#SBATCH` header from a config).
 
-A launcher is `{root, argv, timeout, block_risky}` in the policy. For
+A launcher is `{root, argv, timeout, block_risky}` in the policy. Setup's
+default `argv` is `["cat"]`: submit the script as written. A renderer runs in
+the endpoint worker's environment, not one a repo's own setup would give it:
+on Midway3 that PATH is the endpoint venv's `bin` (so `python3` is the
+endpoint's 3.12, with only gcx's dependencies), `~/.local/bin`, Slurm and the
+system directories. It must not create or sync an environment (`uv run`
+without `--no-project`, `pip install`): that happens inside the same gcx call,
+under `timeout` (120 s by default). For
 `gcx <c> run SCRIPT ARGS...`:
 
 1. SCRIPT must resolve (realpath) inside a launcher's `root`; the longest

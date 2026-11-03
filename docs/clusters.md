@@ -34,6 +34,26 @@ failover, enforcement and adoption records.
   cluster, not just yours, so the menu suggests the profile's test queue and
   lets you type more.
 
+### `gcx run` live test (2026-11-03)
+
+`gcx setup midway3 --menu` turned on `run` with two launchers: `~/gcx-run-test`
+(`cat`) and `~/gcx-run-test/render` (`sh render.sh`, which builds the
+`#SBATCH` header from a `header.conf`). Doctor passed, allowlist 11 functions.
+The endpoint's PATH is its venv `bin`, `~/.local/bin`, Slurm and the system
+directories; `python3` there is the endpoint's 3.12.
+
+- Refused, nothing submitted: a header with `--export`; a script with no
+  account; `~/.bashrc` (under no root); `-p bigmem` (not allowed).
+- Submitted on `caslake` as `pi-dfreedman`, all COMPLETED in a minute:
+  - `args.sh 'a b' '$HOME' -x` (cat): the script saw exactly those three
+    arguments, unexpanded, and ran from `~/gcx-run-test`;
+  - `render/body.sh one` (render.sh): the nested root won; ran from
+    `~/gcx-run-test/render`, logs in its own `logs/`, which gcx created;
+  - `noacct.sh` with `-A pi-dfreedman -p caslake -J gcx-noacct`: flags filled
+    in what the header lacked; the job and log took the `-J` name.
+- The reported `[gcx] output:` paths matched the real logs, and no
+  `gcx-run-*` temp file was left on login4.
+
 ## dsi (2026-10-01)
 
 Fresh install, run by the user in a terminal. Setup stopped at the Globus

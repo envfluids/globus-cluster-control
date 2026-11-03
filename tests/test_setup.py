@@ -283,19 +283,27 @@ def test_menu_again_prefills_current_answers(monkeypatch):
 
 
 def test_run_menu_adds_a_launcher_and_asks_accounts(monkeypatch):
-    # submit? run? read? shell? | add launcher? root, command, block risky?, add another?
-    # | accounts: Enter, confirm | queues: type, confirm | qos: Enter, confirm
+    # submit? run? read? shell? | add launcher? root, command, timeout (bad, then good),
+    # block risky?, add another? | accounts: Enter, confirm | queues: type, confirm
+    # | qos: Enter, confirm
     typed(monkeypatch, "n", "y", "n", "n",
-          "y", "~/repo", "uv run --frozen python submit.py --dry-run", "", "n",
+          "y", "~/repo", "python3 tools/render.py --dry-run", "soon", "30", "", "n",
           "", "", "caslake", "", "", "")
     c = ctx()
     pol = menu.build_policy("midway3", c.prof, c.facts, c.root, menu.Prompter())
     assert pol["capabilities"] == ["status", "run"]
-    assert pol["launchers"] == [{"root": "~/repo", "block_risky": True,
-                                 "argv": ["uv", "run", "--frozen", "python", "submit.py", "--dry-run"]}]
+    assert pol["launchers"] == [{"root": "~/repo", "block_risky": True, "timeout": 30,
+                                 "argv": ["python3", "tools/render.py", "--dry-run"]}]
     assert pol["accounts"] == ["pi-a", "pi-b"] and pol["queues"] == ["caslake"]
     assert "script_roots" not in pol
     build.validate(pol)
+
+
+def test_run_launcher_defaults_to_cat(monkeypatch):
+    # Enter at the command and timeout: submit scripts as written, 120 s.
+    typed(monkeypatch, "y", "~/repo", "", "", "", "n")
+    launchers = menu.choose_launchers(menu.Prompter(), [], {})
+    assert launchers == [{"root": "~/repo", "argv": ["cat"], "timeout": 120, "block_risky": True}]
 
 
 def test_run_without_launchers_is_turned_off(capsys):
