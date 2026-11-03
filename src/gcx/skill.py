@@ -17,7 +17,8 @@ REPO = "https://github.com/envfluids/globus-cluster-control"
 
 VERB_HELP = {
     "status": "`jobs [ID ...]`, `history [ID ...] [--since DATE]`, `queues`",
-    "submit": "`submit SCRIPT [-A ACCT] [-p QUEUE] [-q QOS] [-t TIME] [--after ID ...] [-J NAME]`, "
+    "submit": "`submit SCRIPT [-A ACCT] [-p QUEUE] [-q QOS] [-t TIME] [--after ID ...] [-J NAME]` "
+              "(account and queue from the flags or the script's header; both required), "
               "`cancel ID ...`",
     "run": "`run [-A ACCT] [-p QUEUE] [-q QOS] [-t TIME] [-J NAME] [--after ID ...] [--dry-run] "
            "SCRIPT [ARGS ...]` (renders SCRIPT with its repo's launcher; ARGS become the "

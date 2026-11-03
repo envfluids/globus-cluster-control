@@ -10,8 +10,9 @@ MENU = [
     ("status", "Job status: jobs, history, queues (read-only)", True),
     ("submit", "Submit and cancel jobs: existing scripts in chosen directories, "
                "your own jobs only", True),
-    ("run", ("Templated runs (Slurm): render a repo script with the repo's own launcher, "
-             "check its account and partition, submit it with arguments"), False),
+    ("run", ("Run scripts with arguments (Slurm): scripts in chosen repos, submitted as "
+             "written or rendered by the repo's own tool; account and partition checked"),
+     False),
     ("read", "Read files and logs: ls, tail, head, du in chosen directories", True),
     ("shell", "Arbitrary shell commands (sh). Overrides every other restriction: "
               "anything holding your Globus tokens could run any command as you", False),
@@ -155,7 +156,7 @@ def build_policy(cluster, prof, facts, root, ask, current=None):
     if "run" in caps:
         policy["launchers"] = choose_launchers(ask, cur.get("launchers", []), facts)
         if not policy["launchers"]:
-            print("  (no launchers, so templated runs stay off)")
+            print("  (no launchers, so run stays off)")
             caps.remove("run")
             del policy["launchers"]
     if "submit" in caps or "run" in caps:

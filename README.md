@@ -140,7 +140,7 @@ involved.
 Adding a cluster means adding a profile. Setup learns everything else by
 probing the cluster.
 
-## Templated runs
+## Running scripts with arguments
 
 `gcx <cluster> run SCRIPT [ARGS...]` submits SCRIPT with ARGS as its `"$@"`,
 which `submit` cannot do. Each allowed repo has a launcher: a command that
@@ -150,13 +150,15 @@ renderer instead. gcx checks the header's account and partition (both
 required) and refuses a few risky options (`--wrap`, `--export`,
 `--uid`/`--gid`, `--get-user-env`). gcx options (`-A -p -q -t -J --after
 --dry-run --json`) go before SCRIPT; everything after it is the script's.
+A `~` at the start of an argument (or after `key=`) means your cluster home,
+whether or not your laptop shell expanded it.
 `--dry-run` prints the rendered script and the `sbatch` command without
 submitting anything; try it before a script's first real run.
 
 It is off by default and Slurm-only. Turn it on with `gcx setup <cluster>
 --menu` by giving each repo's root and launcher command. The launcher runs in
 the endpoint's environment, not the repo's, and must finish within its timeout
-(120 s by default), so it should not install or sync anything. Details: [docs/design.md](docs/design.md#templated-runs).
+(120 s by default), so it should not install or sync anything. Details: [docs/design.md](docs/design.md#runs-with-arguments).
 
 ## AI agents
 

@@ -54,9 +54,15 @@ How each request is restricted:
 - **Submit** takes a script that already exists under `script_roots`. It runs
   with its own directory as the working directory. The only flags are
   account, queue, QoS, walltime, dependency and job name, each validated;
-  `--wrap`, `-o` and `--export` are unreachable.
+  `--wrap`, `-o` and `--export` are unreachable. The account and queue come
+  from the flags or else the script's own `#SBATCH`/`#PBS` header; both must
+  be present and allowed (QoS too, if set), and both always go on the
+  command line, so the allowed lists hold for every job. Before 2026-11-03 a
+  script with no `-A`/`-p` flags had its header account and partition
+  applied unchecked, and `~` is a script root on most clusters, so any old
+  script could charge any of your allocations.
 - **Run** renders a script with its repo's own launcher, then submits the
-  result (see Templated runs below).
+  result (see Runs with arguments below).
 - **Cancel** uses `scancel -u $USER`, so only your own jobs can be cancelled.
 - **Output** is capped at 1 MB.
 
@@ -64,7 +70,7 @@ How each request is restricted:
 registering new functions *and* putting their IDs on the endpoint's
 allowlist, which takes SSH access to the cluster.
 
-### Templated runs
+### Runs with arguments
 
 `gcx_submit` cannot take per-request parameters: no script arguments, no
 `--export`, no way to write a file. `gcx_run` fills that gap: it submits a
@@ -83,6 +89,10 @@ under `timeout` (120 s by default). For
 
 1. SCRIPT must resolve (realpath) inside a launcher's `root`; the longest
    matching root wins. ARGS are at most 64 strings, 4 KB in all, no NUL.
+   sbatch passes them to the script with no shell, so the endpoint expands a
+   leading `~` (alone or `~/...`), or one right after the first `=`, to the
+   cluster home, as a shell would. The laptop first maps its own shell's
+   expansion of an unquoted `~` (`/Users/you/...`) back to `~`.
 2. The launcher runs from `root` as `argv + [SCRIPT]` and must print the
    finished batch script (starting with `#!`) on stdout.
 3. gcx reads the `#SBATCH` header the way sbatch does: top of the file up to
@@ -496,10 +506,6 @@ retried. The live outage test found this.
   login nodes. Globus's docs carry example configs for Delta, Stampede3 and
   Midway; site policy on long-running login-node daemons still needs checking.
   Nothing was found for Derecho, which is being retired.
-- **Submit with no `-A`/`-p`.** `gcx_submit` checks account, queue and QoS
-  only when passed as flags. Without them the script's own `#SBATCH -A`/`-p`
-  apply unchecked (the scheduler still limits you to your real allocations).
-  `gcx_run` requires both; whether `submit` should too is undecided.
 - **Cron email** from the failover test was not confirmed received.
 - **Reimage risk.** If both nodes' crontabs are wiped, nothing restarts the
   endpoint. `gcx --status` shows both heartbeats as STALE in that case.

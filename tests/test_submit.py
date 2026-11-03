@@ -131,6 +131,19 @@ def test_run_cli_passes_everything_after_script_to_it(monkeypatch, capsys):
     assert "dry_run" not in sent  # sent only when asked, so older endpoints still accept run
 
 
+def test_run_args_map_laptop_home_back_to_tilde(monkeypatch, tmp_path):
+    # bash expands `key=~/x` and a bare ~/x; zsh with MAGIC_EQUAL_SUBST, `--key=~/x`.
+    from gcx import cli
+    monkeypatch.setattr(cli.Path, "home", lambda: tmp_path)
+    sent = {}
+    monkeypatch.setattr(cli, "call", lambda cluster, verb, kwargs, **kw: sent.update(kwargs) or 0)
+    with pytest.raises(SystemExit):
+        cli.main(["midway3", "run", f"{tmp_path}/repo/s.sh", f"{tmp_path}/data",
+                  f"k={tmp_path}/x", f"--out={tmp_path}", f"{tmp_path}x", "/scratch/y", "plain"])
+    assert sent["script"] == "~/repo/s.sh"
+    assert sent["args"] == ["~/data", "k=~/x", "--out=~", f"{tmp_path}x", "/scratch/y", "plain"]
+
+
 def test_run_dry_run_flag_goes_before_the_script(monkeypatch):
     from gcx import cli
     sent = []

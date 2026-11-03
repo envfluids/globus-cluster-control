@@ -171,13 +171,48 @@ def test_submit_slurm_argv(env):
 def test_submit_pbs_argv_with_site_extra(env):
     script = env.home / "run.pbs"
     script.write_text("#!/bin/bash\n")
-    ns = load(scheduler="pbs", queues=["debug"],
+    ns = load(scheduler="pbs", accounts=["lighthouse"], queues=["debug"],
               submit_extra=["-l", "filesystems=home:eagle"])
-    res = ns["gcx_submit"]("~/run.pbs", queue="debug", walltime="01:00:00")
+    res = ns["gcx_submit"]("~/run.pbs", account="lighthouse", queue="debug", walltime="01:00:00")
     assert res["job_id"] == "4242.polaris-pbs-01"
     [(_, argv)] = calls(env)
-    assert argv == ["qsub", "-q", "debug", "-l", "walltime=01:00:00",
+    assert argv == ["qsub", "-A", "lighthouse", "-q", "debug", "-l", "walltime=01:00:00",
                     "-l", "filesystems=home:eagle", str(script.resolve())]
+
+
+def test_submit_takes_account_and_queue_from_the_header(env):
+    (env.home / "run.sbatch").write_text("#!/bin/bash\n#SBATCH -A pi-good\n"
+                                         "#SBATCH --part=caslake --qos=schmidt\ntrue\n")
+    (env.home / "run.pbs").write_text("#!/bin/bash\n#PBS -A lighthouse\n#PBS -qdebug\ntrue\n")
+    assert load()["gcx_submit"]("~/run.sbatch")["rc"] == 0
+    assert load(scheduler="pbs", accounts=["lighthouse"], queues=["debug"])[
+        "gcx_submit"]("~/run.pbs")["rc"] == 0
+    (_, sb), (_, qs) = calls(env)
+    assert sb[:7] == ["sbatch", "--parsable", "-A", "pi-good", "-p", "caslake", "--qos"]
+    assert qs[:5] == ["qsub", "-A", "lighthouse", "-q", "debug"]
+
+
+@pytest.mark.parametrize("header, kwargs, msg", [
+    ("", {}, "no account"),
+    ("#SBATCH -A pi-good\n", {}, "no queue"),
+    ("#SBATCH -p caslake\n", {"queue": None}, "no account"),
+    ("#SBATCH -A pi-other -p caslake\n", {}, "account 'pi-other' not allowed"),
+    ("#SBATCH -A pi-good -p bigmem\n", {}, "queue 'bigmem' not allowed"),
+    ("#SBATCH -A pi-good -p caslake -q high\n", {}, "qos 'high' not allowed"),
+    ("true\n#SBATCH -A pi-good -p caslake\n", {}, "no account"),  # after the first command
+])
+def test_submit_refuses_unknown_or_unlisted_header_values(env, header, kwargs, msg):
+    (env.home / "run.sbatch").write_text("#!/bin/bash\n" + header + "true\n")
+    res = load()["gcx_submit"]("~/run.sbatch", **kwargs)
+    assert refused(res) and msg in res["stderr"]
+    assert not env.log.exists()
+
+
+def test_submit_flags_beat_the_header(env):
+    (env.home / "run.sbatch").write_text("#!/bin/bash\n#SBATCH -A pi-other -p bigmem\ntrue\n")
+    assert load()["gcx_submit"]("~/run.sbatch", account="pi-good", queue="caslake")["rc"] == 0
+    [(_, argv)] = calls(env)
+    assert argv[2:6] == ["-A", "pi-good", "-p", "caslake"]
 
 
 @pytest.mark.parametrize("kwargs", [
@@ -264,11 +299,11 @@ def test_job_id_after_site_banner(env, tmp_path):
     (fake / "sbatch").write_text("#!/bin/sh\necho '---- Welcome ----'\necho 'SLURM_TACC_NODES=1'\necho 3557959\n")
     (fake / "sbatch").chmod(0o755)
     os.environ["PATH"] = f"{fake}:{os.environ['PATH']}"
-    res = load()["gcx_submit"]("~/run.sbatch")
+    res = load()["gcx_submit"]("~/run.sbatch", account="pi-good", queue="caslake")
     assert res["job_id"] == "3557959"
 
 
-# ---- run (templated, Slurm) -------------------------------------------------
+# ---- run: scripts with arguments (Slurm) ------------------------------------
 
 HEADER = ("#!/bin/bash\n"
           "#SBATCH --account=pi-good\n"
@@ -311,6 +346,17 @@ def test_run_with_cat_submits_the_script_as_written(env):
     assert cwd == str(repo.resolve())
     assert sbatch[:6] == ["sbatch", "--parsable", "-A", "pi-good", "-p", "caslake"]
     assert sbatch[-2:] == ["a b", "c"]
+
+
+def test_run_expands_tilde_in_args_like_a_shell(env):
+    ns, _ = load_run(env, argv=["cat"])
+    home = str(env.home)
+    res = ns["gcx_run"]("~/repo/scripts/smoke.sh",
+                        args=["~", "~/data", "--out=~/o", "k=~", "a~b", "~other", "x=y=~/z"])
+    [(_, sbatch)] = calls(env)
+    assert sbatch[-7:] == [home, home + "/data", "--out=" + home + "/o", "k=" + home,
+                           "a~b", "~other", "x=y=~/z"]
+    assert res["rc"] == 0
 
 
 def test_run_overrides_beat_the_header_and_are_checked(env):

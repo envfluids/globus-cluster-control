@@ -60,6 +60,16 @@ directories; `python3` there is the endpoint's 3.12.
   would create the directory; a missing `--chdir` and a missing log
   directory in `/scratch` were refused. Nothing was queued and the dry run
   created no directories.
+- `chdir.sh` submitted for real (job 62176397): it ran in
+  `~/gcx-run-test/work` and logged to `work/logs/chdir.sh/62176397.out`, the
+  path gcx reported, in the directory gcx created.
+- `~` in script arguments (after the next `gcx setup midway3`): a dry run with
+  `~/data --out=~/o k=~ 'a~b' '~/quoted' '~other'`, the first two expanded by
+  the laptop's zsh to `/Users/...`, showed `/home/awikner/data
+  --out=/home/awikner/o k=/home/awikner 'a~b' /home/awikner/quoted '~other'`.
+- `submit` now checks the header: `noacct.sh` was refused with no flags ("no
+  account") and with `-A` only ("no queue"); a header with
+  `--account=pi-someoneelse` was refused as not allowed. Nothing was queued.
 
 ## dsi (2026-10-01)
 

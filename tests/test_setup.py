@@ -311,14 +311,14 @@ def test_run_without_launchers_is_turned_off(capsys):
     pol = menu.build_policy("midway3", c.prof, c.facts, c.root, menu.Prompter(True),
                             current={"scheduler": "slurm", "capabilities": ["status", "run"]})
     assert "run" not in pol["capabilities"] and "launchers" not in pol
-    assert "templated runs stay off" in capsys.readouterr().out
+    assert "run stays off" in capsys.readouterr().out
 
 
 def test_run_not_offered_on_pbs(capsys):
     prof = profiles.load("derecho")
     c = ctx(prof=prof, facts={"scheduler": "pbs", "accounts": "", "groups": "uchi0014"})
     menu.build_policy("derecho", prof, c.facts, c.root, c.ask)
-    assert "Templated runs" not in capsys.readouterr().out
+    assert "Run scripts with arguments" not in capsys.readouterr().out
 
 
 def test_running_elsewhere_per_globus_is_not_started_again(monkeypatch):

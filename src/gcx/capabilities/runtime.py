@@ -180,27 +180,34 @@ def gcx_submit(script, account=None, queue=None, walltime=None, depends_on=None,
         path = _under(script, "script_roots")
         if not os.path.isfile(path):
             raise Refused(script + " is not a file")
-        acct = _choice(account, "accounts", "account")
-        q = _choice(queue, "queues", "queue")
-        qq = _choice(qos, "qos", "qos")
         deps = _ids(depends_on)
         if job_name is not None and not NAME.match(str(job_name)):
             raise Refused("job name must match " + NAME.pattern)
         slurm = POLICY["scheduler"] == "slurm"
         if walltime is not None and not (SLURM_TIME if slurm else PBS_TIME).match(str(walltime)):
             raise Refused("bad walltime " + repr(walltime))
+        # The account, queue and QoS the job gets: the request's, else the
+        # script's own header. Both account and queue must be known and allowed,
+        # and go on the command line, so the policy holds whichever set them.
+        found = _script_header(path, slurm)
+        acct = account if account is not None else found.get("account")
+        q = queue if queue is not None else found.get("queue")
+        qq = qos if qos is not None else found.get("qos")
+        if not acct:
+            raise Refused("no account: " + script + " sets none; pass -A")
+        if not q:
+            raise Refused("no queue: " + script + " sets none; pass -p")
+        _choice(acct, "accounts", "account")
+        _choice(q, "queues", "queue")
+        _choice(qq, "qos", "qos")
         if slurm:
-            argv = ["sbatch", "--parsable"]
-            argv += ["-A", acct] if acct else []
-            argv += ["-p", q] if q else []
+            argv = ["sbatch", "--parsable", "-A", acct, "-p", q]
             argv += ["--qos", qq] if qq else []
             argv += ["-t", str(walltime)] if walltime else []
             argv += ["--dependency=afterok:" + ":".join(deps)] if deps else []
             argv += ["-J", str(job_name)] if job_name else []
         else:
-            argv = ["qsub"]
-            argv += ["-A", acct] if acct else []
-            argv += ["-q", q] if q else []
+            argv = ["qsub", "-A", acct, "-q", q]
             argv += ["-l", "walltime=" + str(walltime)] if walltime else []
             argv += ["-W", "depend=afterok:" + ":".join(deps)] if deps else []
             argv += ["-N", str(job_name)] if job_name else []
@@ -212,10 +219,10 @@ def gcx_submit(script, account=None, queue=None, walltime=None, depends_on=None,
     return _guard(go)
 
 
-# ---- templated runs (Slurm) -------------------------------------------------
+# ---- run: scripts with arguments (Slurm) ------------------------------------
 #
 # gcx_run renders a repo script with the repo's own launcher (a command that
-# prints the finished batch script, e.g. `submit.py --dry-run`), checks the
+# prints the finished batch script: `cat`, or a repo's template tool), checks the
 # rendered #SBATCH header against the policy, and submits it with the
 # request's arguments as the script's "$@". The request picks only the script,
 # its arguments and the same validated overrides as gcx_submit.
@@ -244,20 +251,48 @@ def _long_match(name, full):
     return len(name) > 2 and full.startswith(name)
 
 
-def _header(text):
-    """The #SBATCH options sbatch would read: from the top of the script up to the
-    first line that is neither blank nor a comment."""
+def _header(text, directive="#SBATCH"):
+    """The options sbatch (or qsub, for #PBS) would read: from the top of the
+    script up to the first line that is neither blank nor a comment."""
     tokens = []
     for line in text.splitlines():
         s = line.strip()
         if s and not s.startswith("#"):
             break
-        if s.startswith("#SBATCH"):
+        if s.startswith(directive):
             try:
-                tokens += shlex.split(s[len("#SBATCH"):], comments=True)
+                tokens += shlex.split(s[len(directive):], comments=True)
             except ValueError as e:
                 raise Refused("cannot parse header line " + repr(s) + ": " + str(e))
     return tokens
+
+
+def _pbs_options(tokens):
+    """{"-A": account, "-q": queue} from #PBS tokens (last wins, as in qsub)."""
+    found = {}
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        i += 1
+        if tok[:2] in ("-A", "-q"):
+            if len(tok) > 2:
+                found[tok[:2]] = tok[2:]
+            else:
+                found[tok] = tokens[i] if i < len(tokens) else ""
+                i += 1
+    return found
+
+
+def _script_header(path, slurm):
+    """The account, queue and QoS a script's own header asks for."""
+    with open(path, errors="replace") as f:
+        text = f.read(_limit())
+    if slurm:
+        found = _sbatch_options(_header(text), block_risky=False)
+        return {"account": found.get("--account"), "queue": found.get("--partition"),
+                "qos": found.get("--qos")}
+    found = _pbs_options(_header(text, "#PBS"))
+    return {"account": found.get("-A"), "queue": found.get("-q")}
 
 
 def _sbatch_options(tokens, block_risky):
@@ -319,7 +354,19 @@ def _script_args(args):
         raise Refused("script arguments exceed " + str(MAX_ARGS_BYTES) + " bytes")
     if any("\x00" in a for a in args):
         raise Refused("script arguments may not contain NUL")
-    return list(args)
+    return [_expand_arg(a) for a in args]
+
+
+def _expand_arg(arg):
+    """Expand a leading ~ (alone or ~/...), or one right after the first =, to the
+    cluster home, as a shell would. sbatch hands arguments to the script with no
+    shell in between, and the laptop maps its own expansion of ~ back to ~."""
+    def tilde(s):
+        return os.path.expanduser(s) if s == "~" or s.startswith("~/") else s
+    key, eq, value = arg.partition("=")
+    if eq and tilde(value) != value:
+        return key + eq + tilde(value)
+    return tilde(arg)
 
 
 def _workdir(found, root):

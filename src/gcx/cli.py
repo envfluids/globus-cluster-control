@@ -141,6 +141,16 @@ def _cluster_path(path):
     return path
 
 
+def _cluster_arg(arg):
+    """_cluster_path for a `run` script argument, also after the first =: bash
+    expands `key=~/x`, and zsh with MAGIC_EQUAL_SUBST `--key=~/x`. The endpoint
+    expands the ~ again to the cluster home."""
+    key, eq, value = arg.partition("=")
+    if eq and _cluster_path(value) != value:
+        return key + eq + _cluster_path(value)
+    return _cluster_path(arg)
+
+
 SLURM_JOB_LINE = re.compile(r"^(\d+(?:_\d+)?)(?:;\S+)?$")      # sbatch --parsable: id[;cluster]
 PBS_JOB_LINE = re.compile(r"^(\d+(?:\[\d*\])?(?:\.[\w.-]+)?)$")
 
@@ -473,6 +483,8 @@ def main(argv=None, prog="gcx"):
         for k in PATH_ARGS:
             if isinstance(kwargs.get(k), str):
                 kwargs[k] = _cluster_path(kwargs[k])
+        if verb == "run":
+            kwargs["args"] = [_cluster_arg(x) for x in kwargs["args"]]
         sys.exit(call(cluster, verb, kwargs, as_json=a.json, no_wait=a.no_wait))
     except config.NotConfigured as e:
         sys.exit(f"[gcx] {e}. Configured: {', '.join(config.configured()) or 'none'}")
