@@ -41,6 +41,7 @@ The code is exec'd under 3.9 and 3.13 in `tests/test_source_compat.py`.
 |---|---|---|
 | status (always on) | `gcx_ping`, `gcx_jobs`, `gcx_history`, `gcx_queues` | `scheduler` |
 | submit | `gcx_submit`, `gcx_cancel` | `script_roots`, `accounts`, `queues`, `qos`, `submit_extra` |
+| run (opt-in, Slurm) | `gcx_run` | `launchers`, `accounts`, `queues`, `qos`, `submit_extra` |
 | read | `gcx_ls`, `gcx_read` (tail/head), `gcx_du` | `read_roots` |
 | shell (opt-in) | `gcx_shell` | none; cancels every other restriction |
 
@@ -53,13 +54,91 @@ How each request is restricted:
 - **Submit** takes a script that already exists under `script_roots`. It runs
   with its own directory as the working directory. The only flags are
   account, queue, QoS, walltime, dependency and job name, each validated;
-  `--wrap`, `-o` and `--export` are unreachable.
+  `--wrap`, `-o` and `--export` are unreachable. The account and queue come
+  from the flags or else the script's own `#SBATCH`/`#PBS` header; both must
+  be present and allowed (QoS too, if set), and both always go on the
+  command line, so the allowed lists hold for every job. Before 2026-11-03 a
+  script with no `-A`/`-p` flags had its header account and partition
+  applied unchecked, and `~` is a script root on most clusters, so any old
+  script could charge any of your allocations.
+- **Run** renders a script with its repo's own launcher, then submits the
+  result (see Runs with arguments below).
 - **Cancel** uses `scancel -u $USER`, so only your own jobs can be cancelled.
 - **Output** is capped at 1 MB.
 
 **Registered code cannot be changed**, so a policy can only be widened by
 registering new functions *and* putting their IDs on the endpoint's
 allowlist, which takes SSH access to the cluster.
+
+### Runs with arguments
+
+`gcx_submit` cannot take per-request parameters: no script arguments, no
+`--export`, no way to write a file. `gcx_run` fills that gap: it submits a
+script with arguments, optionally after rendering it with a repo's own
+template tool (one that builds each cluster's `#SBATCH` header from a config).
+
+A launcher is `{root, argv, timeout, block_risky}` in the policy. Setup's
+default `argv` is `["cat"]`: submit the script as written. A renderer runs in
+the endpoint worker's environment, not one a repo's own setup would give it:
+on Midway3 that PATH is the endpoint venv's `bin` (so `python3` is the
+endpoint's 3.12, with only gcx's dependencies), `~/.local/bin`, Slurm and the
+system directories. It must not create or sync an environment (`uv run`
+without `--no-project`, `pip install`): that happens inside the same gcx call,
+under `timeout` (120 s by default). For
+`gcx <c> run SCRIPT ARGS...`:
+
+1. SCRIPT must resolve (realpath) inside a launcher's `root`; the longest
+   matching root wins. ARGS are at most 64 strings, 4 KB in all, no NUL.
+   sbatch passes them to the script with no shell, so the endpoint expands a
+   leading `~` (alone or `~/...`), or one right after the first `=`, to the
+   cluster home, as a shell would. The laptop first maps its own shell's
+   expansion of an unquoted `~` (`/Users/you/...`) back to `~`.
+2. The launcher runs from `root` as `argv + [SCRIPT]` and must print the
+   finished batch script (starting with `#!`) on stdout.
+3. gcx reads the `#SBATCH` header the way sbatch does: top of the file up to
+   the first command, accepting abbreviated long options. Request overrides
+   (`-A -p -q -t -J --after`) beat the header. The resulting account and
+   partition must be **present** and allowed, and QoS allowed if set.
+4. Log paths are relative to the job's working directory: the header's
+   `--chdir` (itself relative to `root`) or else `root`. A `--chdir` that does
+   not exist is refused, since Slurm would fall back to `/tmp`. sbatch does
+   not create log directories, and a job whose log directory is missing fails
+   without a log, so gcx creates missing `--output`/`--error` directories
+   inside `root` and refuses a missing one outside it. Directories with `%x`
+   or `%u` are filled in first; ones with `%j` and the like cannot be checked.
+5. The script goes to a private temp file and is submitted as
+   `sbatch --parsable -A ACCT -p PART [...] -J NAME TMP ARGS...` from `root`,
+   at-most-once like `submit`. Account and partition are always on the
+   command line, so a header gcx misread cannot charge an unchecked account.
+   The job is named after SCRIPT, not the temp file, unless a name is set.
+   The result carries the job ID and log paths with `%j`, `%x`, `%u` filled in.
+
+**Dry run.** `run --dry-run` does steps 1-4 (the launcher runs, every check
+applies) but creates and submits nothing. It returns the rendered script,
+the `sbatch` command with `SCRIPT` for the temp file, the log paths (`%j`
+unfilled) and the directories a real run would create. Since nothing is
+submitted, the CLI sends it with ordinary retries rather than at-most-once,
+and it sends `dry_run` only when set, so endpoints registered before dry run
+existed still accept every other `run`.
+
+The request controls only which script runs, its `"$@"` and the overrides.
+The script content is trusted the way `submit` trusts `script_roots`.
+
+**Risky options.** Unless a launcher sets `block_risky: false`, a rendered
+header using any of these is refused:
+
+- `--wrap` swaps the script body for an inline command string;
+- `--export` / `--export-file` set the job's environment (`PATH`,
+  `LD_PRELOAD`, `PYTHONPATH`), which changes what code actually runs;
+- `--uid` / `--gid` ask Slurm to run the job as another user or group;
+- `--get-user-env` loads a fresh login environment nobody reviewed.
+
+They change who the job runs as or what it runs, not what resources it gets,
+so a template mistake or a tampered template reaches past the job itself.
+The repo script can still do anything in its body; the blocklist is defense
+in depth against headers, not a sandbox.
+
+**Not yet:** PBS (derecho, polaris).
 
 ### Enforcement
 

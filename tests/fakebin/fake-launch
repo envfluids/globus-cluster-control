@@ -1,0 +1,7 @@
+#!/bin/sh
+# Fake launcher: log argv and cwd like the scheduler stubs, then "render" the
+# script (its last argument) by printing it unchanged.
+{ echo "cwd=$(pwd)"; for a in "$0" "$@"; do echo "$a"; done; echo "--"; } >> "${FAKE_LOG:?}"
+for last in "$@"; do :; done
+if [ -n "$FAKE_LAUNCH_FAIL" ]; then echo "template error" >&2; exit 3; fi
+cat "$last"

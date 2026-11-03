@@ -34,6 +34,43 @@ failover, enforcement and adoption records.
   cluster, not just yours, so the menu suggests the profile's test queue and
   lets you type more.
 
+### `gcx run` live test (2026-11-03)
+
+`gcx setup midway3 --menu` turned on `run` with two launchers: `~/gcx-run-test`
+(`cat`) and `~/gcx-run-test/render` (`sh render.sh`, which builds the
+`#SBATCH` header from a `header.conf`). Doctor passed, allowlist 11 functions.
+The endpoint's PATH is its venv `bin`, `~/.local/bin`, Slurm and the system
+directories; `python3` there is the endpoint's 3.12.
+
+- Refused, nothing submitted: a header with `--export`; a script with no
+  account; `~/.bashrc` (under no root); `-p bigmem` (not allowed).
+- Submitted on `caslake` as `pi-dfreedman`, all COMPLETED in a minute:
+  - `args.sh 'a b' '$HOME' -x` (cat): the script saw exactly those three
+    arguments, unexpanded, and ran from `~/gcx-run-test`;
+  - `render/body.sh one` (render.sh): the nested root won; ran from
+    `~/gcx-run-test/render`, logs in its own `logs/`, which gcx created;
+  - `noacct.sh` with `-A pi-dfreedman -p caslake -J gcx-noacct`: flags filled
+    in what the header lacked; the job and log took the `-J` name.
+- The reported `[gcx] output:` paths matched the real logs, and no
+  `gcx-run-*` temp file was left on login4.
+- Dry run, after `gcx setup midway3` registered it: the three runnable
+  scripts printed their rendered script and the `sbatch` line, with the
+  arguments quoted; `noacct.sh` and `risky.sh` were refused as before. A
+  `--chdir=work` header showed its log under `work/logs/%x/` and that gcx
+  would create the directory; a missing `--chdir` and a missing log
+  directory in `/scratch` were refused. Nothing was queued and the dry run
+  created no directories.
+- `chdir.sh` submitted for real (job 62176397): it ran in
+  `~/gcx-run-test/work` and logged to `work/logs/chdir.sh/62176397.out`, the
+  path gcx reported, in the directory gcx created.
+- `~` in script arguments (after the next `gcx setup midway3`): a dry run with
+  `~/data --out=~/o k=~ 'a~b' '~/quoted' '~other'`, the first two expanded by
+  the laptop's zsh to `/Users/...`, showed `/home/awikner/data
+  --out=/home/awikner/o k=/home/awikner 'a~b' /home/awikner/quoted '~other'`.
+- `submit` now checks the header: `noacct.sh` was refused with no flags ("no
+  account") and with `-A` only ("no queue"); a header with
+  `--account=pi-someoneelse` was refused as not allowed. Nothing was queued.
+
 ## dsi (2026-10-01)
 
 Fresh install, run by the user in a terminal. Setup stopped at the Globus

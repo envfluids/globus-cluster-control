@@ -82,6 +82,7 @@ gcx <cluster> jobs                         # your queued and running jobs
 gcx <cluster> history --since 2026-10-01   # finished jobs
 gcx <cluster> queues
 gcx <cluster> submit ~/runs/job.sbatch -A <account> -p <queue> -t 01:00:00
+gcx <cluster> run ~/repo/jobs/smoke.sh arg1 arg2   # script gets the args; see below
 gcx <cluster> cancel <job-id>
 gcx <cluster> tail ~/runs/job.out -n 100   # also: head, ls, du
 gcx <cluster> sh '<command>'               # only where shell is enabled
@@ -100,7 +101,7 @@ gcx watch status                           # the laptop watcher: last check per 
 | Exit code | Meaning |
 |---|---|
 | 2, "gcx refused" | Outside what you allowed for this cluster; change it with `gcx setup <cluster> --menu`. |
-| 75 | The network dropped after a `submit`, `cancel` or `sh` may have been sent. Check `jobs` before retrying. |
+| 75 | The network dropped after a `submit`, `run`, `cancel` or `sh` may have been sent. Check `jobs` before retrying. |
 | 69 | The endpoint is offline and could not be restarted. Run `gcx login <cluster>` and retry. |
 
 ## Staying online
@@ -138,6 +139,26 @@ involved.
 
 Adding a cluster means adding a profile. Setup learns everything else by
 probing the cluster.
+
+## Running scripts with arguments
+
+`gcx <cluster> run SCRIPT [ARGS...]` submits SCRIPT with ARGS as its `"$@"`,
+which `submit` cannot do. Each allowed repo has a launcher: a command that
+prints the batch script to submit. The default, `cat`, submits the script as
+written; a repo that builds its `#SBATCH` header per cluster can use its own
+renderer instead. gcx checks the header's account and partition (both
+required) and refuses a few risky options (`--wrap`, `--export`,
+`--uid`/`--gid`, `--get-user-env`). gcx options (`-A -p -q -t -J --after
+--dry-run --json`) go before SCRIPT; everything after it is the script's.
+A `~` at the start of an argument (or after `key=`) means your cluster home,
+whether or not your laptop shell expanded it.
+`--dry-run` prints the rendered script and the `sbatch` command without
+submitting anything; try it before a script's first real run.
+
+It is off by default and Slurm-only. Turn it on with `gcx setup <cluster>
+--menu` by giving each repo's root and launcher command. The launcher runs in
+the endpoint's environment, not the repo's, and must finish within its timeout
+(120 s by default), so it should not install or sync anything. Details: [docs/design.md](docs/design.md#runs-with-arguments).
 
 ## AI agents
 
