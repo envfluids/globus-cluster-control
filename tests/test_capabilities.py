@@ -171,13 +171,48 @@ def test_submit_slurm_argv(env):
 def test_submit_pbs_argv_with_site_extra(env):
     script = env.home / "run.pbs"
     script.write_text("#!/bin/bash\n")
-    ns = load(scheduler="pbs", queues=["debug"],
+    ns = load(scheduler="pbs", accounts=["lighthouse"], queues=["debug"],
               submit_extra=["-l", "filesystems=home:eagle"])
-    res = ns["gcx_submit"]("~/run.pbs", queue="debug", walltime="01:00:00")
+    res = ns["gcx_submit"]("~/run.pbs", account="lighthouse", queue="debug", walltime="01:00:00")
     assert res["job_id"] == "4242.polaris-pbs-01"
     [(_, argv)] = calls(env)
-    assert argv == ["qsub", "-q", "debug", "-l", "walltime=01:00:00",
+    assert argv == ["qsub", "-A", "lighthouse", "-q", "debug", "-l", "walltime=01:00:00",
                     "-l", "filesystems=home:eagle", str(script.resolve())]
+
+
+def test_submit_takes_account_and_queue_from_the_header(env):
+    (env.home / "run.sbatch").write_text("#!/bin/bash\n#SBATCH -A pi-good\n"
+                                         "#SBATCH --part=caslake --qos=schmidt\ntrue\n")
+    (env.home / "run.pbs").write_text("#!/bin/bash\n#PBS -A lighthouse\n#PBS -qdebug\ntrue\n")
+    assert load()["gcx_submit"]("~/run.sbatch")["rc"] == 0
+    assert load(scheduler="pbs", accounts=["lighthouse"], queues=["debug"])[
+        "gcx_submit"]("~/run.pbs")["rc"] == 0
+    (_, sb), (_, qs) = calls(env)
+    assert sb[:7] == ["sbatch", "--parsable", "-A", "pi-good", "-p", "caslake", "--qos"]
+    assert qs[:5] == ["qsub", "-A", "lighthouse", "-q", "debug"]
+
+
+@pytest.mark.parametrize("header, kwargs, msg", [
+    ("", {}, "no account"),
+    ("#SBATCH -A pi-good\n", {}, "no queue"),
+    ("#SBATCH -p caslake\n", {"queue": None}, "no account"),
+    ("#SBATCH -A pi-other -p caslake\n", {}, "account 'pi-other' not allowed"),
+    ("#SBATCH -A pi-good -p bigmem\n", {}, "queue 'bigmem' not allowed"),
+    ("#SBATCH -A pi-good -p caslake -q high\n", {}, "qos 'high' not allowed"),
+    ("true\n#SBATCH -A pi-good -p caslake\n", {}, "no account"),  # after the first command
+])
+def test_submit_refuses_unknown_or_unlisted_header_values(env, header, kwargs, msg):
+    (env.home / "run.sbatch").write_text("#!/bin/bash\n" + header + "true\n")
+    res = load()["gcx_submit"]("~/run.sbatch", **kwargs)
+    assert refused(res) and msg in res["stderr"]
+    assert not env.log.exists()
+
+
+def test_submit_flags_beat_the_header(env):
+    (env.home / "run.sbatch").write_text("#!/bin/bash\n#SBATCH -A pi-other -p bigmem\ntrue\n")
+    assert load()["gcx_submit"]("~/run.sbatch", account="pi-good", queue="caslake")["rc"] == 0
+    [(_, argv)] = calls(env)
+    assert argv[2:6] == ["-A", "pi-good", "-p", "caslake"]
 
 
 @pytest.mark.parametrize("kwargs", [
@@ -264,5 +299,215 @@ def test_job_id_after_site_banner(env, tmp_path):
     (fake / "sbatch").write_text("#!/bin/sh\necho '---- Welcome ----'\necho 'SLURM_TACC_NODES=1'\necho 3557959\n")
     (fake / "sbatch").chmod(0o755)
     os.environ["PATH"] = f"{fake}:{os.environ['PATH']}"
-    res = load()["gcx_submit"]("~/run.sbatch")
+    res = load()["gcx_submit"]("~/run.sbatch", account="pi-good", queue="caslake")
     assert res["job_id"] == "3557959"
+
+
+# ---- run: scripts with arguments (Slurm) ------------------------------------
+
+HEADER = ("#!/bin/bash\n"
+          "#SBATCH --account=pi-good\n"
+          "#SBATCH -p caslake   # partition\n"
+          "#SBATCH --job-name=smoke --output=logs/%x-%j.out\n"
+          "\n")
+
+
+def load_run(env, script=HEADER + "pytest \"$@\"\n", **launcher):
+    repo = env.home / "repo"
+    (repo / "scripts").mkdir(parents=True, exist_ok=True)
+    (repo / "scripts" / "smoke.sh").write_text(script)
+    ns = load(capabilities=["status", "run"],
+              launchers=[dict({"root": "~/repo", "argv": ["fake-launch", "--dry-run"]}, **launcher)])
+    return ns, repo
+
+
+def test_run_renders_checks_and_submits_with_args(env):
+    ns, repo = load_run(env)
+    res = ns["gcx_run"]("~/repo/scripts/smoke.sh", args=["-k", "foo bar"], walltime="00:30:00",
+                        depends_on=["7"])
+    assert res["rc"] == 0 and res["job_id"] == "4242"
+    assert res["output"] == f"{repo.resolve()}/logs/smoke-4242.out"
+    assert (repo / "logs").is_dir()  # sbatch would not create it
+    (lcwd, launch), (scwd, sbatch) = calls(env)
+    assert lcwd == scwd == str(repo.resolve())
+    assert launch == ["fake-launch", "--dry-run", str(repo.resolve() / "scripts" / "smoke.sh")]
+    tmp = sbatch[-3]
+    assert sbatch == ["sbatch", "--parsable", "-A", "pi-good", "-p", "caslake", "-t", "00:30:00",
+                      "--dependency=afterok:7", "-J", "smoke", tmp, "-k", "foo bar"]
+    assert os.path.basename(tmp).startswith("gcx-run-") and not os.path.exists(tmp)
+
+
+def test_run_with_cat_submits_the_script_as_written(env):
+    # The setup default: no renderer, nothing needed beyond coreutils.
+    ns, repo = load_run(env, argv=["cat"])
+    res = ns["gcx_run"]("~/repo/scripts/smoke.sh", args=["a b", "c"])
+    assert res["rc"] == 0 and res["job_id"] == "4242"
+    [(cwd, sbatch)] = calls(env)  # cat is not a fake, so only sbatch is logged
+    assert cwd == str(repo.resolve())
+    assert sbatch[:6] == ["sbatch", "--parsable", "-A", "pi-good", "-p", "caslake"]
+    assert sbatch[-2:] == ["a b", "c"]
+
+
+def test_run_expands_tilde_in_args_like_a_shell(env):
+    ns, _ = load_run(env, argv=["cat"])
+    home = str(env.home)
+    res = ns["gcx_run"]("~/repo/scripts/smoke.sh",
+                        args=["~", "~/data", "--out=~/o", "k=~", "a~b", "~other", "x=y=~/z"])
+    [(_, sbatch)] = calls(env)
+    assert sbatch[-7:] == [home, home + "/data", "--out=" + home + "/o", "k=" + home,
+                           "a~b", "~other", "x=y=~/z"]
+    assert res["rc"] == 0
+
+
+def test_run_overrides_beat_the_header_and_are_checked(env):
+    ns, _ = load_run(env)
+    assert refused(ns["gcx_run"]("~/repo/scripts/smoke.sh", queue="bigmem"))
+    ns = load(capabilities=["status", "run"], queues=["caslake", "debug"],
+              launchers=[{"root": "~/repo", "argv": ["fake-launch"]}])
+    res = ns["gcx_run"]("~/repo/scripts/smoke.sh", queue="debug", job_name="mine")
+    assert res["rc"] == 0
+    sbatch = calls(env)[-1][1]
+    assert sbatch[4:6] == ["-p", "debug"] and sbatch[6:8] == ["-J", "mine"]
+    assert res["output"].endswith("/logs/mine-4242.out")
+
+
+@pytest.mark.parametrize("header, msg", [
+    ("#!/bin/bash\n#SBATCH -p caslake\n", "no account"),
+    ("#!/bin/bash\n#SBATCH -A pi-good\n", "no partition"),
+    ("#!/bin/bash\n#SBATCH -A pi-other -p caslake\n", "account 'pi-other' not allowed"),
+    ("#!/bin/bash\n#SBATCH --acc=pi-other -p caslake\n", "not allowed"),  # sbatch abbreviation
+    ("#!/bin/bash\n#SBATCH -Api-good -pbigmem\n", "queue 'bigmem' not allowed"),
+    ("#!/bin/bash\n#SBATCH -A pi-good -p caslake --qos=high\n", "qos 'high' not allowed"),
+    ("#!/bin/bash\n#SBATCH -A pi-good -p caslake\n#SBATCH --export=LD_PRELOAD=/x.so\n", "--export"),
+    ("#!/bin/bash\n#SBATCH -A pi-good -p caslake\n#SBATCH --exp=ALL\n", "--exp"),
+    ("#!/bin/bash\n#SBATCH -A pi-good -p caslake --wrap 'id'\n", "--wrap"),
+    ("#!/bin/bash\n#SBATCH -A pi-good -p caslake\n#SBATCH --uid=0\n", "--uid"),
+    ("#!/bin/bash\n#SBATCH -A pi-good -p caslake\n#SBATCH --get-user-env\n", "--get-user-env"),
+    ("echo not a script\n", "not a complete batch script"),
+])
+def test_run_refuses_bad_rendered_scripts_without_sbatch(env, header, msg):
+    ns, _ = load_run(env, script=header + "true\n")
+    res = ns["gcx_run"]("~/repo/scripts/smoke.sh")
+    assert refused(res) and msg in res["stderr"]
+    assert [argv[0] for _, argv in calls(env)] == ["fake-launch"]
+
+
+def test_run_header_stops_at_first_command(env):
+    # sbatch ignores #SBATCH lines after the first command, and so does gcx.
+    ns, _ = load_run(env, script=HEADER + "true\n#SBATCH --export=ALL\n")
+    assert ns["gcx_run"]("~/repo/scripts/smoke.sh")["rc"] == 0
+
+
+def test_run_blocklist_can_be_turned_off_per_launcher(env):
+    ns, _ = load_run(env, script=HEADER.replace("\n\n", "\n#SBATCH --export=NONE\n\n") + "true\n",
+                     block_risky=False)
+    assert ns["gcx_run"]("~/repo/scripts/smoke.sh")["rc"] == 0
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"args": "-k foo"},
+    {"args": ["ok", 3]},
+    {"args": ["x"] * 65},
+    {"args": ["x" * 4097]},
+    {"args": ["a\x00b"]},
+    {"walltime": "1:00; id"},
+    {"job_name": "--wrap=id"},
+    {"depends_on": ["1; id"]},
+])
+def test_run_bad_request_refused_before_the_launcher(env, kwargs):
+    ns, _ = load_run(env)
+    assert refused(ns["gcx_run"]("~/repo/scripts/smoke.sh", **kwargs))
+    assert not env.log.exists()
+
+
+def test_run_script_must_be_under_a_launcher_root(env):
+    ns, _ = load_run(env)
+    (env.home / "other.sh").write_text(HEADER)
+    res = ns["gcx_run"]("~/other.sh")
+    assert refused(res) and "not under a launcher root" in res["stderr"]
+    (env.home / "repo" / "escape.sh").symlink_to(env.home / "other.sh")
+    assert refused(ns["gcx_run"]("~/repo/escape.sh"))
+    assert not env.log.exists()
+
+
+def test_run_launcher_failure_is_reported(env, monkeypatch):
+    ns, _ = load_run(env)
+    monkeypatch.setenv("FAKE_LAUNCH_FAIL", "1")
+    res = ns["gcx_run"]("~/repo/scripts/smoke.sh")
+    assert res["rc"] == 3 and "launcher failed" in res["stderr"] and "template error" in res["stderr"]
+    assert [argv[0] for _, argv in calls(env)] == ["fake-launch"]
+
+
+def test_run_refuses_missing_log_dir_outside_root(env):
+    # sbatch does not create it, and the job would fail without a log.
+    ns, _ = load_run(env, script=HEADER.replace("logs/%x-%j.out", f"{env.scratch}/new/%j.out")
+                     + "true\n")
+    res = ns["gcx_run"]("~/repo/scripts/smoke.sh")
+    assert refused(res) and "outside the launcher root" in res["stderr"]
+    assert [argv[0] for _, argv in calls(env)] == ["fake-launch"]
+    assert not (env.scratch / "new").exists()
+    (env.scratch / "new").mkdir()  # an existing one is fine
+    res = ns["gcx_run"]("~/repo/scripts/smoke.sh")
+    assert res["rc"] == 0 and res["output"] == f"{env.scratch}/new/4242.out"
+
+
+def test_run_creates_log_dir_named_after_the_job(env):
+    ns, repo = load_run(env, script=HEADER.replace("logs/%x-%j.out", "logs/%x/%j.out") + "true\n")
+    res = ns["gcx_run"]("~/repo/scripts/smoke.sh")
+    assert res["output"] == f"{repo.resolve()}/logs/smoke/4242.out"
+    assert (repo / "logs" / "smoke").is_dir()
+
+
+def test_run_log_paths_follow_chdir(env):
+    ns, repo = load_run(env, script=HEADER.replace("\n\n", "\n#SBATCH -D work\n\n") + "true\n")
+    (repo / "work").mkdir()
+    res = ns["gcx_run"]("~/repo/scripts/smoke.sh")
+    assert res["output"] == f"{repo.resolve()}/work/logs/smoke-4242.out"
+    assert (repo / "work" / "logs").is_dir() and not (repo / "logs").exists()
+    [_, (scwd, _)] = calls(env)
+    assert scwd == str(repo.resolve())  # sbatch still runs from the root
+
+
+def test_run_refuses_missing_chdir(env):
+    # Slurm would run the job in /tmp, and its logs would land there.
+    ns, _ = load_run(env, script=HEADER.replace("\n\n", "\n#SBATCH --chdir=nowhere\n\n")
+                     + "true\n")
+    res = ns["gcx_run"]("~/repo/scripts/smoke.sh")
+    assert refused(res) and "--chdir" in res["stderr"]
+    assert [argv[0] for _, argv in calls(env)] == ["fake-launch"]
+
+
+def test_run_dry_run_renders_and_checks_but_submits_nothing(env):
+    ns, repo = load_run(env)
+    res = ns["gcx_run"]("~/repo/scripts/smoke.sh", args=["a b"], dry_run=True)
+    assert res["rc"] == 0 and res["dry_run"] and res["stdout"] == HEADER + "pytest \"$@\"\n"
+    assert res["sbatch"] == ["sbatch", "--parsable", "-A", "pi-good", "-p", "caslake",
+                             "-J", "smoke", "SCRIPT", "a b"]
+    assert res["cwd"] == str(repo.resolve())
+    assert res["output"] == f"{repo.resolve()}/logs/smoke-%j.out"
+    assert res["create_dirs"] == [str(repo.resolve() / "logs")] and not (repo / "logs").exists()
+    assert [argv[0] for _, argv in calls(env)] == ["fake-launch"]  # launcher ran, sbatch did not
+
+
+def test_run_dry_run_still_refuses(env):
+    ns, _ = load_run(env)
+    assert refused(ns["gcx_run"]("~/repo/scripts/smoke.sh", queue="bigmem", dry_run=True))
+    assert refused(ns["gcx_run"]("~/repo/scripts/smoke.sh", dry_run="yes"))
+
+
+def test_run_disabled_and_policy_rules(env):
+    assert refused(load()["gcx_run"]("~/repo/scripts/smoke.sh"))
+    base = {"scheduler": "slurm", "capabilities": ["status", "run"], "accounts": ["a"],
+            "queues": ["q"], "launchers": [{"root": "~/repo", "argv": ["x"]}]}
+    build.validate(base)
+    for bad, msg in [({"scheduler": "pbs"}, "Slurm-only"),
+                     ({"accounts": []}, "accounts and queues"),
+                     ({"launchers": []}, "needs launchers"),
+                     ({"launchers": [{"root": "/", "argv": ["x"]}]}, "not /"),
+                     ({"launchers": [{"root": "~/r", "argv": []}]}, "argv"),
+                     ({"launchers": [{"root": "~/r", "argv": ["x"], "shell": True}]}, "keys"),
+                     ({"launchers": [{"root": "~/r", "argv": ["x"], "block_risky": "no"}]}, "true or false"),
+                     ({"launchers": [{"argv": ["x"]}]}, "must be an absolute")]:
+        with pytest.raises(build.PolicyError, match=msg):
+            build.validate(dict(base, **bad))
+    assert "gcx_run" in build.entry_functions(base) and "gcx_run" in build.MUTATING

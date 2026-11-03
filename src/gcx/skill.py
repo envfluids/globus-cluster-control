@@ -17,8 +17,12 @@ REPO = "https://github.com/envfluids/globus-cluster-control"
 
 VERB_HELP = {
     "status": "`jobs [ID ...]`, `history [ID ...] [--since DATE]`, `queues`",
-    "submit": "`submit SCRIPT [-A ACCT] [-p QUEUE] [-q QOS] [-t TIME] [--after ID ...] [-J NAME]`, "
+    "submit": "`submit SCRIPT [-A ACCT] [-p QUEUE] [-q QOS] [-t TIME] [--after ID ...] [-J NAME]` "
+              "(account and queue from the flags or the script's header; both required), "
               "`cancel ID ...`",
+    "run": "`run [-A ACCT] [-p QUEUE] [-q QOS] [-t TIME] [-J NAME] [--after ID ...] [--dry-run] "
+           "SCRIPT [ARGS ...]` (renders SCRIPT with its repo's launcher; ARGS become the "
+           "script's `$@`, so gcx options and `--json` go before SCRIPT)",
     "read": "`ls [PATH]`, `tail PATH [-n N]`, `head PATH [-n N]`, `du [PATH] [-d N]`",
     "shell": "`sh 'CMD'` (arbitrary shell)",
 }
@@ -35,6 +39,10 @@ def cluster_section(name, cfg):
         lines.append("- Readable: " + ", ".join(f"`{r}`" for r in pol.get("read_roots", [])))
     if "submit" in caps:
         lines.append("- Submit scripts from: " + ", ".join(f"`{r}`" for r in pol.get("script_roots", [])))
+    if "run" in caps:
+        lines.append("- Run scripts under: " + ", ".join(
+            f"`{l['root']}` (launcher `{' '.join(l['argv'])}`)" for l in pol.get("launchers", [])))
+    if "submit" in caps or "run" in caps:
         lines.append("- Accounts: " + (", ".join(f"`{a}`" for a in pol.get("accounts", [])) or "none"))
         lines.append("- Queues: " + (", ".join(f"`{q}`" for q in pol.get("queues", [])) or "none"))
         if pol.get("qos"):
@@ -97,6 +105,10 @@ Source and docs: {REPO}
   cluster. Paths are relative to the cluster home unless absolute.
 - `--json` gives machine-readable output, and `--no-wait` returns a task ID
   to collect later with `gcx result <id>`.
+- `run` prints the job ID, then `[gcx] output: PATH` on stderr; follow the
+  job with `jobs` and `tail PATH`. Exit 75 applies to `run` as to `submit`.
+  `run --dry-run` prints the rendered script and the `sbatch` command it
+  would use, and submits nothing; use it before a first real `run`.
 
 ## Clusters
 

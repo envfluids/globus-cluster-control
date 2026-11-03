@@ -1,6 +1,7 @@
 """The questions `gcx setup` asks. Every question has a default; --yes takes them."""
 
 import re
+import shlex
 import subprocess
 
 from gcx import profiles
@@ -9,6 +10,9 @@ MENU = [
     ("status", "Job status: jobs, history, queues (read-only)", True),
     ("submit", "Submit and cancel jobs: existing scripts in chosen directories, "
                "your own jobs only", True),
+    ("run", ("Run scripts with arguments (Slurm): scripts in chosen repos, submitted as "
+             "written or rendered by the repo's own tool; account and partition checked"),
+     False),
     ("read", "Read files and logs: ls, tail, head, du in chosen directories", True),
     ("shell", "Arbitrary shell commands (sh). Overrides every other restriction: "
               "anything holding your Globus tokens could run any command as you", False),
@@ -131,6 +135,8 @@ def build_policy(cluster, prof, facts, root, ask, current=None):
             print(f"  - {text}: always on")
             caps.append(cap)
             continue
+        if cap == "run" and prof["scheduler"] != "slurm":
+            continue
         if ask.confirm(f"{text}?", cap in cur["capabilities"] if cur else default):
             caps.append(cap)
     if "shell" in caps and "shell" not in cur.get("capabilities", []) and not ask.confirm(
@@ -147,6 +153,13 @@ def build_policy(cluster, prof, facts, root, ask, current=None):
         roots = resolve_roots(ask.extend_list("Directories gcx may submit scripts from",
                                               cur.get("script_roots") or prof["script_roots"]), facts)
         policy["script_roots"] = roots + ([test_dir] if not _covers(roots, test_dir) else [])
+    if "run" in caps:
+        policy["launchers"] = choose_launchers(ask, cur.get("launchers", []), facts)
+        if not policy["launchers"]:
+            print("  (no launchers, so run stays off)")
+            caps.remove("run")
+            del policy["launchers"]
+    if "submit" in caps or "run" in caps:
         accounts = [a for a in _csv(facts, "accounts") if a != "default"]  # TACC lists a pseudo-account
         if not accounts and prof.get("accounts_from_groups"):
             # PBS has no account list; NCAR projects are Unix groups (uchi0014).
@@ -167,6 +180,54 @@ def build_policy(cluster, prof, facts, root, ask, current=None):
         if prof["submit_extra"]:
             policy["submit_extra"] = list(prof["submit_extra"])
     return policy
+
+
+def choose_launchers(ask, current, facts):
+    """Launchers for `run`: a repo root and the command, run from that root,
+    that prints the rendered batch script for the script path appended to it."""
+    launchers = []
+    for launcher in current:
+        if ask.confirm(f"Keep launcher {launcher['root']}: {shlex.join(launcher['argv'])} "
+                       f"({launcher.get('timeout', 120)} s)?", True):
+            launchers.append(launcher)
+    while not ask.yes and ask.confirm("Add a launcher?", not launchers):
+        root = ask.ask("Repo root (absolute, ~/... or $VAR/...; blank to stop)", "")
+        if not root:
+            break
+        if not is_path(root):
+            print(f"  not a directory: {root}")
+            continue
+        resolved = resolve_roots([root], facts)
+        if not resolved:
+            continue
+        # The launcher runs in the endpoint's environment, not a repo's: `cat`
+        # (submit the script as written) needs nothing beyond coreutils.
+        cmd = ask.ask("Launcher command, run from the root with the script path appended; it "
+                      "prints the batch script to submit (cat: submit the script as written; "
+                      "or a renderer such as python3 tools/render.py)", "cat")
+        try:
+            argv = shlex.split(cmd)
+        except ValueError as e:
+            print(f"  cannot parse that command: {e}")
+            continue
+        if not argv:
+            continue
+        timeout = ask_timeout(ask)
+        block = ask.confirm("Refuse rendered scripts that use --wrap, --export, --uid, --gid or "
+                            "--get-user-env? (they change who the job runs as or what it runs)", True)
+        launchers.append({"root": resolved[0], "argv": argv, "timeout": timeout,
+                          "block_risky": block})
+    return launchers
+
+
+def ask_timeout(ask, default=120):
+    """Seconds the launcher may run. It must not set up an environment (uv sync,
+    pip install) on the way: the whole run happens inside one gcx call."""
+    while True:
+        got = ask.ask("Seconds the launcher may take before gcx gives up", str(default))
+        if re.fullmatch(r"[1-9]\d{0,3}", got.strip()):
+            return int(got)
+        print(f"  not a number of seconds (1-9999): {got}")
 
 
 def _covers(roots, path):

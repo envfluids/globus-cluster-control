@@ -4,6 +4,11 @@
     gcx <cluster> history [ID ...] [--since DATE]  finished jobs (sacct / qstat -x)
     gcx <cluster> queues                           partitions / queues
     gcx <cluster> submit SCRIPT [-A ACCT] [-p QUEUE] [-q QOS] [-t TIME] [--after ID ...] [-J NAME]
+    gcx <cluster> run [-A ACCT] [-p QUEUE] [-q QOS] [-t TIME] [--after ID ...] [-J NAME] [--dry-run]
+                      SCRIPT [ARGS ...]
+                                     render SCRIPT with its repo's launcher, check it, submit;
+                                     ARGS become the script's "$@" (gcx options go before SCRIPT);
+                                     --dry-run prints the script and sbatch command instead
     gcx <cluster> cancel ID [ID ...]
     gcx <cluster> ls [PATH]          gcx <cluster> du [PATH] [-d N]
     gcx <cluster> tail PATH [-n N]   gcx <cluster> head PATH [-n N]
@@ -25,7 +30,7 @@ Paths are relative to your cluster home unless absolute; ~ and $VARS expand on
 the cluster (an unquoted ~ that your laptop shell expanded is mapped back). Add --json for machine-readable output, --no-wait to print the
 task id and return.
 
-A network drop costs a retry, not a re-login. submit, cancel and sh are sent
+A network drop costs a retry, not a re-login. submit, run, cancel and sh are sent
 at-most-once: if the connection drops after the request may have been sent,
 gcx exits 75 rather than risk running it twice; check `jobs` before retrying.
 """
@@ -33,6 +38,7 @@ gcx exits 75 rather than risk running it twice; check `jobs` before retrying.
 import argparse
 import json
 import re
+import shlex
 import subprocess
 import sys
 import warnings
@@ -68,6 +74,18 @@ def _verbs():
         p.add_argument("--after", nargs="+", metavar="ID", help="start after these jobs succeed")
         p.add_argument("-J", "--job-name")
 
+    def run(p):
+        p.add_argument("-A", "--account")
+        p.add_argument("-p", "--queue", "--partition", dest="queue")
+        p.add_argument("-q", "--qos")
+        p.add_argument("-t", "--walltime")
+        p.add_argument("--after", nargs="+", metavar="ID", help="start after these jobs succeed")
+        p.add_argument("-J", "--job-name")
+        p.add_argument("--dry-run", action="store_true",
+                       help="render and check, print the script and sbatch command; submit nothing")
+        p.add_argument("script")
+        p.add_argument("args", nargs=argparse.REMAINDER, help="passed to the script as \"$@\"")
+
     def lines(p):
         p.add_argument("path")
         p.add_argument("-n", "--lines", type=int, default=200)
@@ -95,6 +113,10 @@ def _verbs():
         "submit": ("gcx_submit", submit, lambda a: {
             "script": a.script, "account": a.account, "queue": a.queue, "qos": a.qos,
             "walltime": a.walltime, "depends_on": a.after, "job_name": a.job_name}),
+        "run": ("gcx_run", run, lambda a: {
+            "script": a.script, "args": a.args, "account": a.account, "queue": a.queue,
+            "qos": a.qos, "walltime": a.walltime, "depends_on": a.after, "job_name": a.job_name,
+            **({"dry_run": True} if a.dry_run else {})}),
         "cancel": ("gcx_cancel", lambda p: p.add_argument("ids", nargs="+"),
                    lambda a: {"job_ids": a.ids}),
         "ls": ("gcx_ls", path, lambda a: {"path": a.path}),
@@ -117,6 +139,16 @@ def _cluster_path(path):
     if path == home or path.startswith(home + "/"):
         return "~" + path[len(home):]
     return path
+
+
+def _cluster_arg(arg):
+    """_cluster_path for a `run` script argument, also after the first =: bash
+    expands `key=~/x`, and zsh with MAGIC_EQUAL_SUBST `--key=~/x`. The endpoint
+    expands the ~ again to the cluster home."""
+    key, eq, value = arg.partition("=")
+    if eq and _cluster_path(value) != value:
+        return key + eq + _cluster_path(value)
+    return _cluster_path(arg)
 
 
 SLURM_JOB_LINE = re.compile(r"^(\d+(?:_\d+)?)(?:;\S+)?$")      # sbatch --parsable: id[;cluster]
@@ -178,11 +210,24 @@ def render(verb, res, as_json, scheduler="slurm"):
         if res.get("truncated"):
             print("[gcx] listing truncated", file=sys.stderr)
         return 0
-    if verb == "submit" and res.get("rc") == 0:
+    if verb == "run" and res.get("dry_run"):
+        sys.stdout.write(res.get("stdout", ""))  # the script sbatch would get
+        print(f"[gcx] dry run, nothing submitted. Would run from {res.get('cwd')}:\n"
+              f"[gcx]   {shlex.join(res.get('sbatch', []))}", file=sys.stderr)
+        for d in res.get("create_dirs", []):
+            print(f"[gcx] would create: {d}", file=sys.stderr)
+        for key in ("output", "error"):
+            if res.get(key):
+                print(f"[gcx] {key}: {res[key]}", file=sys.stderr)
+        return 0
+    if verb in ("submit", "run") and res.get("rc") == 0:
         job = job_id_of(res, scheduler)
         if job:
             print(job)
             sys.stderr.write(res.get("stderr", ""))
+            for key in ("output", "error"):
+                if res.get(key):
+                    print(f"[gcx] {key}: {res[key]}", file=sys.stderr)
             return 0
     sys.stdout.write(res.get("stdout", ""))
     sys.stderr.write(res.get("stderr", ""))
@@ -203,7 +248,7 @@ def call_capability(cluster, fname, no_wait=False, client=None, **kwargs):
     client = client or _client()
     restart.ensure_online(cluster, cfg, client)  # "on-use" clusters only
     fid = funcs[fname]["uuid"]
-    if fname in MUTATING:
+    if fname in MUTATING and not kwargs.get("dry_run"):
         task_id = run_at_most_once(client, cfg["endpoint"], fid, **kwargs)
     else:  # read-only: a duplicate run is harmless
         task_id = retry(client.run, endpoint_id=cfg["endpoint"], function_id=fid, **kwargs)
@@ -433,11 +478,13 @@ def main(argv=None, prog="gcx"):
         p.add_argument("--no-wait", action="store_true", help="print the task id and return")
         a = p.parse_args(rest[1:])
         kwargs = VERBS[verb][2](a)
-        if verb == "submit" and kwargs.get("account"):
+        if verb in ("submit", "run") and kwargs.get("account"):
             kwargs["account"] = _account_spelling(cluster, kwargs["account"])
         for k in PATH_ARGS:
             if isinstance(kwargs.get(k), str):
                 kwargs[k] = _cluster_path(kwargs[k])
+        if verb == "run":
+            kwargs["args"] = [_cluster_arg(x) for x in kwargs["args"]]
         sys.exit(call(cluster, verb, kwargs, as_json=a.json, no_wait=a.no_wait))
     except config.NotConfigured as e:
         sys.exit(f"[gcx] {e}. Configured: {', '.join(config.configured()) or 'none'}")

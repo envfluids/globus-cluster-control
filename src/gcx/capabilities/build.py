@@ -16,14 +16,16 @@ from importlib import resources
 CAPABILITIES = {
     "status": ["gcx_ping", "gcx_jobs", "gcx_history", "gcx_queues"],
     "submit": ["gcx_submit", "gcx_cancel"],
+    "run": ["gcx_run"],
     "read": ["gcx_ls", "gcx_read", "gcx_du"],
     "shell": ["gcx_shell"],
 }
 # Calls that change state on the cluster: submitted at-most-once.
-MUTATING = {"gcx_submit", "gcx_cancel", "gcx_shell"}
+MUTATING = {"gcx_submit", "gcx_cancel", "gcx_run", "gcx_shell"}
 
 POLICY_LINE = re.compile(r"^POLICY = \{\}.*$", re.M)
 SCHEDULERS = ("slurm", "pbs")
+LAUNCHER_KEYS = {"root", "argv", "timeout", "block_risky"}
 OLDEST_PYTHON = (3, 9)  # endpoint Pythons we must still parse on
 
 
@@ -44,10 +46,34 @@ def validate(policy):
         raise PolicyError("'read' needs read_roots")
     if "submit" in caps and not policy.get("script_roots"):
         raise PolicyError("'submit' needs script_roots")
-    for key in ("read_roots", "script_roots"):
-        for root in policy.get(key, []):
-            if root in ("/", "") or not (root.startswith(("/", "~", "$"))):
-                raise PolicyError(f"{key}: {root!r} must be an absolute, ~ or $VAR path, not /")
+    roots = [(key, root) for key in ("read_roots", "script_roots") for root in policy.get(key, [])]
+    if "run" in caps:
+        _validate_run(policy)
+        roots += [("launchers", launcher.get("root")) for launcher in policy["launchers"]]
+    for key, root in roots:
+        if not isinstance(root, str) or root in ("/", "") or not root.startswith(("/", "~", "$")):
+            raise PolicyError(f"{key}: {root!r} must be an absolute, ~ or $VAR path, not /")
+
+
+def _validate_run(policy):
+    if policy["scheduler"] != "slurm":
+        raise PolicyError("'run' is Slurm-only for now")
+    if not policy.get("accounts") or not policy.get("queues"):
+        raise PolicyError("'run' needs accounts and queues")
+    launchers = policy.get("launchers")
+    if not isinstance(launchers, list) or not launchers:
+        raise PolicyError("'run' needs launchers")
+    for launcher in launchers:
+        if not isinstance(launcher, dict) or set(launcher) - LAUNCHER_KEYS:
+            raise PolicyError(f"launcher {launcher!r}: keys must be among {sorted(LAUNCHER_KEYS)}")
+        argv = launcher.get("argv")
+        if not isinstance(argv, list) or not argv or not all(isinstance(a, str) and a for a in argv):
+            raise PolicyError(f"launcher {launcher.get('root')!r}: argv must be a non-empty list of strings")
+        if not isinstance(launcher.get("block_risky", True), bool):
+            raise PolicyError(f"launcher {launcher.get('root')!r}: block_risky must be true or false")
+        timeout = launcher.get("timeout", 120)
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
+            raise PolicyError(f"launcher {launcher.get('root')!r}: timeout must be a positive number")
 
 
 def entry_functions(policy):
