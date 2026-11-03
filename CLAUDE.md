@@ -16,7 +16,8 @@ the cluster side.
 - **The laptop watcher** (`gcx watch`, `src/gcx/watch.py`) is the human's: you
   may run `gcx watch status`, never `install`/`uninstall`.
 - **Never run `globus-compute-endpoint login`**, the laptop's first Globus login,
-  `gcx login`, or `gcx ssh-config --apply`. They need MFA, a browser, or edit
+  `gcx login`, `gcx launcher add`/`remove` (they re-register and restart an
+  endpoint), or `gcx ssh-config --apply`. They need MFA, a browser, or edit
   the human's SSH config; ask the human. `gcx ssh-config` without `--apply`
   is a harmless preview.
 - **The endpoint runs on exactly one Midway3 login node** (primary login4,
@@ -25,12 +26,14 @@ the cluster side.
   `gcx --status midway3`.
 - **The endpoint only runs registered gcx functions.** A raw Globus Compute
   `ShellFunction` gets 403 by design. Policy changes go through
-  `gcx setup <c> --menu`, run by the human; `gcx doctor` (all clusters) or
+  `gcx setup <c> --menu` or, for `run` launchers, `gcx launcher add|remove`,
+  both run by the human; `gcx doctor` (all clusters) or
   `gcx doctor <c>` is the health check.
 - **Per-cluster facts and lessons** are in `docs/clusters.md`. Read it before
   changing a profile in `src/gcx/data/profiles/`.
-- **Day-to-day agent usage** is described by the generated skill
-  (`gcx skill --print`); keep `src/gcx/skill.py` in step with the CLI.
+- **Day-to-day agent usage** is described by the generated skills
+  (`gcx skill --print`; `gcx-run-author` for writing `run` scripts and
+  launchers); keep `src/gcx/skill.py` in step with the CLI.
 - **Changing what is installed on a cluster**: edit the profile or templates
   under `src/gcx/data/`, then `gcx setup <c> --dry-run`, then `gcx setup <c>`.
   Do not edit files on the cluster directly. Setup asks questions and needs

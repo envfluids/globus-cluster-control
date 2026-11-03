@@ -78,7 +78,12 @@ script with arguments, optionally after rendering it with a repo's own
 template tool (one that builds each cluster's `#SBATCH` header from a config).
 
 A launcher is `{root, argv, timeout, block_risky}` in the policy. Setup's
-default `argv` is `["cat"]`: submit the script as written. A renderer runs in
+default `argv` is `["cat"]`: submit the script as written. `gcx launcher
+add|remove` (`src/gcx/launcher.py`) edits the list without the menu: it
+validates the new policy, then applies it with setup's own steps (register,
+allowlist, restart; no test job). It refuses when `run` is off, since turning
+it on also means choosing accounts and queues, and when the SSH connection is
+down, before saving anything. A renderer runs in
 the endpoint worker's environment, not one a repo's own setup would give it:
 on Midway3 that PATH is the endpoint venv's `bin` (so `python3` is the
 endpoint's 3.12, with only gcx's dependencies), `~/.local/bin`, Slurm and the
