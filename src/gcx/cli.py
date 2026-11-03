@@ -21,6 +21,7 @@
     gcx allowlist <cluster> [--apply | --off]   restrict the endpoint to those functions
     gcx doctor [cluster] [-v]        check that clusters work and are locked down (all if omitted)
     gcx setup <cluster> [--dry-run] [--yes] [--menu]   install / update, then test; --menu changes choices
+    gcx launcher add|remove|list <cluster> ...   change `run` launchers without the menu (see --help)
     gcx ssh-config [cluster ...] [--user U] [--apply]   SSH aliases with shared connections
     gcx login [cluster ...] [--refresh]   open those connections (you answer MFA), once a day
     gcx skill [--print]              write the Claude Code skill (~/.claude/skills/gcx) from your config
@@ -449,6 +450,12 @@ def main(argv=None, prog="gcx"):
         login(argv[1:])
     if argv[0] == "watch":
         sys.exit(watch_cmd(argv[1:]))
+    if argv[0] == "launcher":
+        from gcx import launcher
+        try:
+            sys.exit(launcher.main(argv[1:]))
+        except config.NotConfigured as e:
+            sys.exit(f"[gcx] {e}. Configured: {', '.join(config.configured()) or 'none'}")
     if argv[0] == "skill":
         from gcx import skill
         if argv[1:] == ["--print"]:

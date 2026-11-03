@@ -83,6 +83,7 @@ gcx <cluster> history --since 2026-10-01   # finished jobs
 gcx <cluster> queues
 gcx <cluster> submit ~/runs/job.sbatch -A <account> -p <queue> -t 01:00:00
 gcx <cluster> run ~/repo/jobs/smoke.sh arg1 arg2   # script gets the args; see below
+gcx launcher add <cluster> ~/repo          # let `run` submit scripts under ~/repo
 gcx <cluster> cancel <job-id>
 gcx <cluster> tail ~/runs/job.out -n 100   # also: head, ls, du
 gcx <cluster> sh '<command>'               # only where shell is enabled
@@ -156,21 +157,37 @@ whether or not your laptop shell expanded it.
 submitting anything; try it before a script's first real run.
 
 It is off by default and Slurm-only. Turn it on with `gcx setup <cluster>
---menu` by giving each repo's root and launcher command. The launcher runs in
-the endpoint's environment, not the repo's, and must finish within its timeout
+--menu`, which also asks for its accounts and queues and a first launcher.
+After that, add or remove launchers without the menu:
+
+```bash
+gcx launcher add <cluster> ~/repo                            # cat: scripts as written
+gcx launcher add <cluster> ~/repo2 --timeout 60 -- sh tools/render.sh
+gcx launcher add <cluster> ~/repo2 --dry-run -- sh tools/render.sh   # check only
+gcx launcher list <cluster>
+gcx launcher remove <cluster> ~/repo2
+```
+
+Launchers are part of the policy registered on the endpoint, so `add` and
+`remove` re-register the cluster's functions and restart its endpoint (about
+a minute), and need `gcx login <cluster>` first. The launcher runs in the
+endpoint's environment, not the repo's, and must finish within its timeout
 (120 s by default), so it should not install or sync anything. Details: [docs/design.md](docs/design.md#runs-with-arguments).
 
 ## AI agents
 
-`gcx skill`, also run by every `gcx setup`, writes a
-[Claude Code](https://claude.com/claude-code) skill to
-`~/.claude/skills/gcx/SKILL.md` from your configuration. Agents in any repo
-then know:
+`gcx skill`, also run by every `gcx setup` and `gcx launcher add`/`remove`,
+writes two [Claude Code](https://claude.com/claude-code) skills from your
+configuration:
 
-- which clusters you have;
-- what each one allows;
-- the rules: respect refusals, never retry-loop `submit`, and leave `gcx
-  login` and `gcx setup` to the human.
+- `~/.claude/skills/gcx/SKILL.md`, for using gcx. Agents in any repo then
+  know which clusters you have, what each one allows, and the rules: respect
+  refusals, never retry-loop `submit`, and leave `gcx login`, `gcx setup` and
+  `gcx launcher add` to the human.
+- `~/.claude/skills/gcx-run-author/SKILL.md`, for making a script or repo
+  runnable with `gcx run`. An agent writes or adapts the script (or a
+  renderer), checks it against gcx's rules, checks the launcher with
+  `gcx launcher add ... --dry-run`, and hands you the command to run.
 
 ## Layout
 

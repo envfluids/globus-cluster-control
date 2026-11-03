@@ -70,6 +70,12 @@ directories; `python3` there is the endpoint's 3.12.
 - `submit` now checks the header: `noacct.sh` was refused with no flags ("no
   account") and with `-A` only ("no queue"); a header with
   `--account=pi-someoneelse` was refused as not allowed. Nothing was queued.
+- `gcx launcher` (2026-11-03): `gcx launcher add midway3 ~/gcx-run-test/work`
+  re-registered and restarted the endpoint; doctor passed with the new policy
+  (`65ce48d9a819`), and both skills listed the new root. A dry run of
+  `work/hello.sh` ran from the new, more specific root. `gcx launcher remove`
+  put back the earlier policy (`98332a12852e`, doctor passing, skills
+  updated); the same script then fell back to the `~/gcx-run-test` launcher.
 
 ## dsi (2026-10-01)
 

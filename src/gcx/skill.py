@@ -1,9 +1,14 @@
-"""`gcx skill`: a user-level Claude Code skill describing your gcx clusters.
+"""`gcx skill`: user-level Claude Code skills describing your gcx clusters.
 
-Written to ~/.claude/skills/gcx/SKILL.md, so agents in every repo discover
-gcx. It is generated from your personal config -- what each cluster allows --
-and refreshed at the end of every `gcx setup`, so it never drifts from the
-policies actually registered.
+Two skills, so agents in every repo discover gcx:
+
+- ~/.claude/skills/gcx/SKILL.md: using gcx on your clusters;
+- ~/.claude/skills/gcx-run-author/SKILL.md: making a script or repo runnable
+  with `gcx run` (writing the script or renderer, then the launcher).
+
+Both are generated from your personal config -- what each cluster allows --
+and refreshed at the end of every `gcx setup` and `gcx launcher add|remove`,
+so they never drift from the policies actually registered.
 """
 
 import os
@@ -13,6 +18,7 @@ from gcx import config, profiles
 from gcx.capabilities.build import CAPABILITIES
 
 SKILL_DIR = Path(os.environ.get("GCX_SKILL_DIR", Path.home() / ".claude" / "skills" / "gcx"))
+RUN_SKILL = "gcx-run-author"  # written next to SKILL_DIR
 REPO = "https://github.com/envfluids/globus-cluster-control"
 
 VERB_HELP = {
@@ -70,7 +76,7 @@ def render():
     names = ", ".join(clusters) or "none yet"
     return f"""---
 name: gcx
-description: Run job-control commands on HPC clusters ({names}) through Globus Compute with the `gcx` CLI -- check jobs and queues, submit and cancel batch jobs, read logs and list files -- without SSH. Use whenever the user asks to check, submit, cancel or inspect jobs or files on one of these clusters, or when SSH to them hangs or prompts for MFA.
+description: Run job-control commands on HPC clusters ({names}) through Globus Compute with the `gcx` CLI -- check jobs and queues, submit and cancel batch jobs, run scripts with arguments, read logs and list files -- without SSH. Use whenever the user asks to check, submit, cancel or inspect jobs or files on one of these clusters, or when SSH to them hangs or prompts for MFA.
 ---
 
 # gcx: cluster job control without SSH
@@ -96,8 +102,11 @@ Source and docs: {REPO}
 - **Exit 69**: the endpoint is offline and could not be restarted. Ask the
   human to run `gcx login <cluster>`.
 - **Never run the commands that need the human**: `gcx login`, `gcx setup`,
-  `gcx ssh-config --apply`, `gcx watch install`/`uninstall`, or any Globus
-  login. They need MFA or a browser, or change the human's own setup.
+  `gcx launcher add`/`remove`, `gcx ssh-config --apply`,
+  `gcx watch install`/`uninstall`, or any Globus login. They need MFA or a
+  browser, re-register and restart an endpoint, or change the human's own
+  setup. `gcx launcher list <cluster>` and `gcx launcher add ... --dry-run`
+  only check and print.
   `gcx watch status` shows the laptop watcher's last check per cluster.
   `gcx doctor` (all clusters, one line each) and `gcx doctor <cluster>` are
   safe health checks.
@@ -109,6 +118,8 @@ Source and docs: {REPO}
   job with `jobs` and `tail PATH`. Exit 75 applies to `run` as to `submit`.
   `run --dry-run` prints the rendered script and the `sbatch` command it
   would use, and submits nothing; use it before a first real `run`.
+- To make a new script or repo runnable with `run`, use the
+  `{RUN_SKILL}` skill.
 
 ## Clusters
 
@@ -116,13 +127,120 @@ Source and docs: {REPO}
 """
 
 
-def install(quiet=False):
-    SKILL_DIR.mkdir(parents=True, exist_ok=True)
-    path = SKILL_DIR / "SKILL.md"
-    text = render()
+def run_cluster_lines(name, cfg):
+    """What the run-author skill needs to know about one cluster."""
+    pol = cfg.get("policy") or {}
+    scheduler = pol.get("scheduler", profiles.load(name)["scheduler"])
+    if scheduler != "slurm":
+        return [f"- **{name}** ({scheduler}): `run` is Slurm-only; not available here."]
+    if "run" not in pol.get("capabilities", []):
+        return [f"- **{name}**: `run` is off. The human turns it on with "
+                f"`gcx setup {name} --menu` (it also chooses the accounts and queues)."]
+    launchers = "; ".join(f"`{l['root']}` (`{' '.join(l['argv'])}`, {l.get('timeout', 120)} s)"
+                          for l in pol.get("launchers", []))
+    lines = [f"- **{name}**: launchers {launchers}.",
+             "  Accounts: " + ", ".join(f"`{a}`" for a in pol.get("accounts", [])) +
+             "; partitions: " + ", ".join(f"`{q}`" for q in pol.get("queues", [])) +
+             ("; QoS: " + ", ".join(f"`{q}`" for q in pol["qos"]) if pol.get("qos") else "") + "."]
+    return lines
+
+
+def render_run_author():
+    clusters = []
+    for c in config.configured():
+        try:
+            clusters += run_cluster_lines(c, config.load(c))
+        except profiles.UnknownCluster:
+            continue
+    return f"""---
+name: {RUN_SKILL}
+description: Make a script or repo runnable with `gcx <cluster> run` (submitting a batch script with arguments through Globus Compute) -- write or adapt the batch script, or a renderer that prints one, check it against gcx's rules, and hand the human the one `gcx launcher add` command that allows it. Use when the user asks to make a job script launchable through gcx, to add a gcx run template or launcher, or to submit a repo's scripts with arguments through gcx.
+---
+
+# Making a script runnable with `gcx run`
+
+`gcx <cluster> run SCRIPT ARGS...` submits a script with arguments. SCRIPT must
+be under a **launcher root** (the longest matching root wins). On the cluster,
+the endpoint runs the launcher's command from the root with SCRIPT's absolute
+path appended, takes its stdout as the batch script, checks the `#SBATCH`
+header, and submits it with `sbatch` from the root, with ARGS as `"$@"`.
+Generated by `gcx skill` from the user's gcx config. Usage rules are in the
+`gcx` skill; this one is about writing what `run` submits.
+
+**Prefer the launcher `cat`**: the script is submitted as written. Write a
+renderer only when the repo already builds headers per cluster, or must.
+
+## What the submitted script must satisfy (otherwise "gcx refused", exit 2)
+
+- It starts with `#!`, and the `#SBATCH` lines come before the first command:
+  sbatch ignores later ones, and so does gcx.
+- `--account` and `--partition` are set in the header, or the user passes
+  `-A`/`-p`. Both must be on the cluster's allowed lists below, and so must
+  `--qos` if set. Put them in the header when the script is cluster-specific.
+- None of `--wrap`, `--export`, `--export-file`, `--uid`, `--gid` or
+  `--get-user-env`: they change who the job runs as or what it runs.
+- Log paths (`--output`, `--error`) are relative to the job's working
+  directory: `--chdir` if set (it must exist), else the root. gcx creates a
+  missing log directory inside the root and refuses one outside it, so prefer
+  `--output=logs/%x-%j.out`.
+- Arguments reach the script with no shell in between: use `"$@"` (quoted).
+  A leading `~` (or one right after `key=`) is expanded to the cluster home by
+  gcx; `$VARS` and globs are not.
+- The job does not get a login shell: load modules and activate environments
+  in the script body.
+
+## What a renderer must satisfy (any launcher other than `cat`)
+
+- It runs on the login node in the **endpoint's** environment, not the
+  repo's: no login shell and no modules; `python3` is the endpoint's own
+  Python 3.12 with only gcx's dependencies. Use the standard library, `sh`,
+  `sed` and the like.
+- It must not create or sync an environment (`uv run` without
+  `--no-project`, `pip install`, `conda`) and must finish within its timeout
+  (120 s unless set).
+- It gets the script's path as its last argument, runs from the root, and
+  prints **only** the finished script on stdout. Errors go to stderr with a
+  nonzero exit (gcx reports "launcher failed"). No side effects: it also runs
+  for `--dry-run`.
+
+## Workflow
+
+1. Read the script and decide: `cat`, or a renderer. Pick the root: the
+   repo's checkout **on the cluster** (`gcx <cluster> ls` to confirm where).
+2. Write or adapt the script, or the renderer, in the repo. Run a renderer
+   locally on the script and check its output against the rules above.
+3. Get the change onto the cluster the repo's usual way (git, rsync). gcx
+   does not upload files.
+4. If the root has no launcher yet (below, or `gcx launcher list <cluster>`),
+   check the command with
+   `gcx launcher add <cluster> <root> --dry-run -- <command>` (safe; omit
+   `-- <command>` for `cat`), then **give the human** the same command without
+   `--dry-run`. It re-registers and restarts the endpoint (about a minute)
+   and needs their SSH login: never run it yourself. If `run` is off on the
+   cluster, the human needs `gcx setup <cluster> --menu` instead.
+5. Once the launcher exists: `gcx <cluster> run --dry-run SCRIPT ARGS...`,
+   and check the rendered script, the `sbatch` line and the log path. Then
+   one real `run` with the human's go-ahead, followed with `jobs` and `tail`.
+
+## Clusters
+
+{chr(10).join(clusters) if clusters else "No clusters configured yet."}
+"""
+
+
+def _write(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
     changed = not path.exists() or path.read_text() != text
     if changed:
         path.write_text(text)
-    if not quiet:
-        print(f"[gcx] {'wrote' if changed else 'up to date:'} {path}")
+    return changed
+
+
+def install(quiet=False):
+    path = SKILL_DIR / "SKILL.md"
+    run_path = SKILL_DIR.parent / RUN_SKILL / "SKILL.md"
+    for p, text in ((path, render()), (run_path, render_run_author())):
+        changed = _write(p, text)
+        if not quiet:
+            print(f"[gcx] {'wrote' if changed else 'up to date:'} {p}")
     return path

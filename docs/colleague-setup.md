@@ -124,15 +124,16 @@ gcx doctor delta            # every check for one cluster
 
 ## 6. Claude Code and other agents
 
-Setup writes `~/.claude/skills/gcx/SKILL.md`, regenerated from your config,
-so every Claude Code session in every repo knows:
+Setup writes two skills under `~/.claude/skills/`, regenerated from your
+config, so every Claude Code session in every repo knows:
 
-- which clusters you have;
-- what each one allows;
-- the rules: no workarounds for refusals, no retry loops around `submit`,
-  never run `gcx login` or `gcx setup` itself.
+- `gcx`: which clusters you have, what each one allows, and the rules: no
+  workarounds for refusals, no retry loops around `submit`, never run
+  `gcx login`, `gcx setup` or `gcx launcher add` itself;
+- `gcx-run-author`: how to make a script runnable with `gcx run`, ending
+  with the `gcx launcher add` command for you to run.
 
-Run `gcx skill` to rewrite it by hand.
+Run `gcx skill` to rewrite them by hand.
 
 ## Per-cluster notes
 
