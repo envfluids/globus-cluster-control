@@ -53,6 +53,13 @@ directories; `python3` there is the endpoint's 3.12.
     in what the header lacked; the job and log took the `-J` name.
 - The reported `[gcx] output:` paths matched the real logs, and no
   `gcx-run-*` temp file was left on login4.
+- Dry run, after `gcx setup midway3` registered it: the three runnable
+  scripts printed their rendered script and the `sbatch` line, with the
+  arguments quoted; `noacct.sh` and `risky.sh` were refused as before. A
+  `--chdir=work` header showed its log under `work/logs/%x/` and that gcx
+  would create the directory; a missing `--chdir` and a missing log
+  directory in `/scratch` were refused. Nothing was queued and the dry run
+  created no directories.
 
 ## dsi (2026-10-01)
 

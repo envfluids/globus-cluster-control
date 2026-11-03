@@ -128,6 +128,47 @@ def test_run_cli_passes_everything_after_script_to_it(monkeypatch, capsys):
                   "-k", "foo", "--json", "-t", "x"])
     assert sent["script"] == "repo/smoke.sh" and sent["walltime"] == "00:30:00"
     assert sent["args"] == ["-k", "foo", "--json", "-t", "x"]  # the script's, not gcx's
+    assert "dry_run" not in sent  # sent only when asked, so older endpoints still accept run
+
+
+def test_run_dry_run_flag_goes_before_the_script(monkeypatch):
+    from gcx import cli
+    sent = []
+    monkeypatch.setattr(cli, "call", lambda cluster, verb, kwargs, **kw: sent.append(kwargs) or 0)
+    for argv in (["--dry-run", "repo/smoke.sh"], ["repo/smoke.sh", "--dry-run"]):
+        with pytest.raises(SystemExit):
+            cli.main(["midway3", "run", *argv])
+    assert sent[0]["dry_run"] is True and sent[0]["args"] == []
+    assert "dry_run" not in sent[1] and sent[1]["args"] == ["--dry-run"]
+
+
+def test_run_dry_run_is_not_sent_at_most_once(monkeypatch):
+    # Nothing is submitted, so a dropped connection can simply be retried.
+    from gcx import cli
+    cfg = {"endpoint": "ep", "functions": {"gcx_run": {"uuid": "fid"}}}
+    monkeypatch.setattr(cli.config, "load", lambda cluster: cfg)
+    monkeypatch.setattr(cli.restart, "ensure_online", lambda *a: None)
+    used = []
+    monkeypatch.setattr(cli, "run_at_most_once", lambda *a, **k: used.append("once") or "t")
+    monkeypatch.setattr(cli, "retry", lambda *a, **k: used.append("retry") or "t")
+    monkeypatch.setattr(cli, "wait", lambda client, t: {"result": {"rc": 0}})
+    client = type("C", (), {"run": None})()
+    cli.call_capability("midway3", "gcx_run", client=client, script="s", dry_run=True)
+    cli.call_capability("midway3", "gcx_run", client=client, script="s")
+    assert used == ["retry", "once"]
+
+
+def test_run_dry_run_prints_script_and_command(capsys):
+    from gcx.cli import render
+    rc = render("run", {"rc": 0, "stdout": "#!/bin/bash\ntrue\n", "stderr": "", "dry_run": True,
+                        "cwd": "/home/a/repo", "create_dirs": ["/home/a/repo/logs"],
+                        "sbatch": ["sbatch", "--parsable", "-A", "pi-a", "-J", "smoke", "SCRIPT",
+                                   "a b"],
+                        "output": "/home/a/repo/logs/smoke-%j.out"}, as_json=False)
+    out, err = capsys.readouterr()
+    assert rc == 0 and out == "#!/bin/bash\ntrue\n"
+    assert "nothing submitted" in err and "sbatch --parsable -A pi-a -J smoke SCRIPT 'a b'" in err
+    assert "would create: /home/a/repo/logs" in err and "output: /home/a/repo/logs/smoke-%j.out" in err
 
 
 def test_run_result_prints_job_id_and_log_path(capsys):

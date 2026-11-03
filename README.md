@@ -148,8 +148,10 @@ prints the batch script to submit. The default, `cat`, submits the script as
 written; a repo that builds its `#SBATCH` header per cluster can use its own
 renderer instead. gcx checks the header's account and partition (both
 required) and refuses a few risky options (`--wrap`, `--export`,
-`--uid`/`--gid`, `--get-user-env`). gcx options (`-A -p -q -t
--J --after --json`) go before SCRIPT; everything after it is the script's.
+`--uid`/`--gid`, `--get-user-env`). gcx options (`-A -p -q -t -J --after
+--dry-run --json`) go before SCRIPT; everything after it is the script's.
+`--dry-run` prints the rendered script and the `sbatch` command without
+submitting anything; try it before a script's first real run.
 
 It is off by default and Slurm-only. Turn it on with `gcx setup <cluster>
 --menu` by giving each repo's root and launcher command. The launcher runs in

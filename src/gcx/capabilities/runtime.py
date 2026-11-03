@@ -235,7 +235,7 @@ MAX_ARGS_BYTES = 4096
 
 # The header options gcx reads: long name -> short flag.
 SBATCH_TRACKED = {"--account": "-A", "--partition": "-p", "--qos": "-q", "--job-name": "-J",
-                  "--output": "-o", "--error": "-e"}
+                  "--output": "-o", "--error": "-e", "--chdir": "-D"}
 
 
 def _long_match(name, full):
@@ -322,27 +322,58 @@ def _script_args(args):
     return list(args)
 
 
-def _log_path(pattern, root, job_id, job_name):
-    """Absolute log path with the common % patterns filled in (%A, %a, ... stay)."""
-    path = pattern if os.path.isabs(pattern) else os.path.join(root, pattern)
+def _workdir(found, root):
+    """The job's working directory: the header's --chdir (relative to root, where
+    sbatch runs) or root. Relative log paths are relative to it, not to root."""
+    d = found.get("--chdir")
+    if not d:
+        return root
+    d = os.path.normpath(d if os.path.isabs(d) else os.path.join(root, d))
+    if "%" not in d and not os.path.isdir(d):
+        raise Refused("working directory " + d + " (--chdir) does not exist; Slurm would "
+                      "run the job in /tmp instead")
+    return d
+
+
+def _log_path(pattern, workdir, job_id, job_name):
+    """Absolute log path with the common % patterns filled in (%A, %a, ... stay;
+    so does %j until there is a job id)."""
+    path = pattern if os.path.isabs(pattern) else os.path.join(workdir, pattern)
     for key, value in (("%j", job_id or "%j"), ("%x", job_name), ("%u", _user())):
         path = path.replace(key, value)
     return path
 
 
-def _make_log_dir(pattern, root):
-    """sbatch does not create log directories; create them, but only inside root."""
-    d = os.path.dirname(pattern if os.path.isabs(pattern) else os.path.join(root, pattern))
-    if d and "%" not in d:
+def _log_dirs(found, workdir, root, job_name):
+    """Missing log directories to create before submitting.
+
+    sbatch does not create them, and a job whose log directory is missing fails
+    without writing a log. gcx creates them only inside root, and refuses a
+    missing one outside it rather than submit a job that cannot log.
+    """
+    todo = []
+    for key in ("--output", "--error"):
+        if not found.get(key):
+            continue
+        d = os.path.dirname(_log_path(found[key], workdir, None, job_name))
+        if "%" in d or os.path.isdir(d):
+            continue  # %j and the like are known only once the job exists
         real = os.path.realpath(d)
-        if os.path.commonpath([real, root]) == root:
-            os.makedirs(real, exist_ok=True)
+        if os.path.commonpath([real, root]) != root:
+            raise Refused("log directory " + d + " (" + key + ") does not exist and is "
+                          "outside the launcher root " + root + "; sbatch would not create "
+                          "it, so the job would fail without a log")
+        if real not in todo:
+            todo.append(real)
+    return todo
 
 
 def gcx_run(script, args=None, account=None, queue=None, walltime=None, depends_on=None,
-            job_name=None, qos=None):
+            job_name=None, qos=None, dry_run=False):
     def go():
         _require("run")
+        if dry_run not in (True, False):
+            raise Refused("dry_run must be true or false")
         launcher, root, path = _launcher_for(script)
         if not os.path.isfile(path):
             raise Refused(script + " is not a file")
@@ -376,29 +407,42 @@ def gcx_run(script, args=None, account=None, queue=None, walltime=None, depends_
         if not NAME.match(name):
             raise Refused("job name must match " + NAME.pattern)
 
-        for key in ("--output", "--error"):
-            if found.get(key):
-                _make_log_dir(found[key], root)
+        workdir = _workdir(found, root)
+        new_dirs = _log_dirs(found, workdir, root, name)
+        # Overrides go on the command line, where they beat the header.
+        argv = ["sbatch", "--parsable", "-A", acct, "-p", part]
+        argv += ["--qos", qq] if qq else []
+        argv += ["-t", str(walltime)] if walltime else []
+        argv += ["--dependency=afterok:" + ":".join(deps)] if deps else []
+        argv += ["-J", name]  # otherwise the job is named after the temp file
+        argv += list(POLICY.get("submit_extra", []))
+
+        def logs(job_id):
+            out = {"output": _log_path(found.get("--output") or "slurm-%j.out", workdir,
+                                       job_id, name)}
+            if found.get("--error"):
+                out["error"] = _log_path(found["--error"], workdir, job_id, name)
+            return out
+
+        if dry_run:
+            # Everything above ran (launcher, header checks); nothing is created
+            # or submitted. stdout is the script sbatch would get.
+            res = {"rc": 0, "stdout": text, "stderr": "", "dry_run": True, "cwd": root,
+                   "sbatch": argv + ["SCRIPT"] + argv_extra, "create_dirs": new_dirs}
+            res.update(logs(None))
+            return res
+        for d in new_dirs:
+            os.makedirs(d, exist_ok=True)
         fd, tmp = tempfile.mkstemp(prefix="gcx-run-", suffix=".sh")
         try:
             with os.fdopen(fd, "w") as f:
                 f.write(text)
-            # Overrides go on the command line, where they beat the header.
-            argv = ["sbatch", "--parsable", "-A", acct, "-p", part]
-            argv += ["--qos", qq] if qq else []
-            argv += ["-t", str(walltime)] if walltime else []
-            argv += ["--dependency=afterok:" + ":".join(deps)] if deps else []
-            argv += ["-J", name]  # otherwise the job is named after the temp file
-            argv += list(POLICY.get("submit_extra", []))
             res = _run(argv + [tmp] + argv_extra, cwd=root)
         finally:
             os.unlink(tmp)  # sbatch keeps its own copy
         if res["rc"] == 0:
             res["job_id"] = _job_id(res["stdout"], True)
-            out = found.get("--output") or "slurm-%j.out"
-            res["output"] = _log_path(out, root, res["job_id"], name)
-            if found.get("--error"):
-                res["error"] = _log_path(found["--error"], root, res["job_id"], name)
+            res.update(logs(res["job_id"]))
         return res
     return _guard(go)
 

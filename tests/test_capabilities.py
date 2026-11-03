@@ -392,11 +392,61 @@ def test_run_launcher_failure_is_reported(env, monkeypatch):
     assert [argv[0] for _, argv in calls(env)] == ["fake-launch"]
 
 
-def test_log_dir_outside_root_not_created(env):
+def test_run_refuses_missing_log_dir_outside_root(env):
+    # sbatch does not create it, and the job would fail without a log.
     ns, _ = load_run(env, script=HEADER.replace("logs/%x-%j.out", f"{env.scratch}/new/%j.out")
                      + "true\n")
     res = ns["gcx_run"]("~/repo/scripts/smoke.sh")
-    assert res["output"] == f"{env.scratch}/new/4242.out" and not (env.scratch / "new").exists()
+    assert refused(res) and "outside the launcher root" in res["stderr"]
+    assert [argv[0] for _, argv in calls(env)] == ["fake-launch"]
+    assert not (env.scratch / "new").exists()
+    (env.scratch / "new").mkdir()  # an existing one is fine
+    res = ns["gcx_run"]("~/repo/scripts/smoke.sh")
+    assert res["rc"] == 0 and res["output"] == f"{env.scratch}/new/4242.out"
+
+
+def test_run_creates_log_dir_named_after_the_job(env):
+    ns, repo = load_run(env, script=HEADER.replace("logs/%x-%j.out", "logs/%x/%j.out") + "true\n")
+    res = ns["gcx_run"]("~/repo/scripts/smoke.sh")
+    assert res["output"] == f"{repo.resolve()}/logs/smoke/4242.out"
+    assert (repo / "logs" / "smoke").is_dir()
+
+
+def test_run_log_paths_follow_chdir(env):
+    ns, repo = load_run(env, script=HEADER.replace("\n\n", "\n#SBATCH -D work\n\n") + "true\n")
+    (repo / "work").mkdir()
+    res = ns["gcx_run"]("~/repo/scripts/smoke.sh")
+    assert res["output"] == f"{repo.resolve()}/work/logs/smoke-4242.out"
+    assert (repo / "work" / "logs").is_dir() and not (repo / "logs").exists()
+    [_, (scwd, _)] = calls(env)
+    assert scwd == str(repo.resolve())  # sbatch still runs from the root
+
+
+def test_run_refuses_missing_chdir(env):
+    # Slurm would run the job in /tmp, and its logs would land there.
+    ns, _ = load_run(env, script=HEADER.replace("\n\n", "\n#SBATCH --chdir=nowhere\n\n")
+                     + "true\n")
+    res = ns["gcx_run"]("~/repo/scripts/smoke.sh")
+    assert refused(res) and "--chdir" in res["stderr"]
+    assert [argv[0] for _, argv in calls(env)] == ["fake-launch"]
+
+
+def test_run_dry_run_renders_and_checks_but_submits_nothing(env):
+    ns, repo = load_run(env)
+    res = ns["gcx_run"]("~/repo/scripts/smoke.sh", args=["a b"], dry_run=True)
+    assert res["rc"] == 0 and res["dry_run"] and res["stdout"] == HEADER + "pytest \"$@\"\n"
+    assert res["sbatch"] == ["sbatch", "--parsable", "-A", "pi-good", "-p", "caslake",
+                             "-J", "smoke", "SCRIPT", "a b"]
+    assert res["cwd"] == str(repo.resolve())
+    assert res["output"] == f"{repo.resolve()}/logs/smoke-%j.out"
+    assert res["create_dirs"] == [str(repo.resolve() / "logs")] and not (repo / "logs").exists()
+    assert [argv[0] for _, argv in calls(env)] == ["fake-launch"]  # launcher ran, sbatch did not
+
+
+def test_run_dry_run_still_refuses(env):
+    ns, _ = load_run(env)
+    assert refused(ns["gcx_run"]("~/repo/scripts/smoke.sh", queue="bigmem", dry_run=True))
+    assert refused(ns["gcx_run"]("~/repo/scripts/smoke.sh", dry_run="yes"))
 
 
 def test_run_disabled_and_policy_rules(env):

@@ -19,9 +19,9 @@ VERB_HELP = {
     "status": "`jobs [ID ...]`, `history [ID ...] [--since DATE]`, `queues`",
     "submit": "`submit SCRIPT [-A ACCT] [-p QUEUE] [-q QOS] [-t TIME] [--after ID ...] [-J NAME]`, "
               "`cancel ID ...`",
-    "run": "`run [-A ACCT] [-p QUEUE] [-t TIME] [-J NAME] [--after ID ...] SCRIPT [ARGS ...]` "
-           "(renders SCRIPT with its repo's launcher; ARGS become the script's `$@`, so gcx "
-           "options and `--json` go before SCRIPT)",
+    "run": "`run [-A ACCT] [-p QUEUE] [-q QOS] [-t TIME] [-J NAME] [--after ID ...] [--dry-run] "
+           "SCRIPT [ARGS ...]` (renders SCRIPT with its repo's launcher; ARGS become the "
+           "script's `$@`, so gcx options and `--json` go before SCRIPT)",
     "read": "`ls [PATH]`, `tail PATH [-n N]`, `head PATH [-n N]`, `du [PATH] [-d N]`",
     "shell": "`sh 'CMD'` (arbitrary shell)",
 }
@@ -106,6 +106,8 @@ Source and docs: {REPO}
   to collect later with `gcx result <id>`.
 - `run` prints the job ID, then `[gcx] output: PATH` on stderr; follow the
   job with `jobs` and `tail PATH`. Exit 75 applies to `run` as to `submit`.
+  `run --dry-run` prints the rendered script and the `sbatch` command it
+  would use, and submits nothing; use it before a first real `run`.
 
 ## Clusters
 

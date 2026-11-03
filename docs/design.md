@@ -89,13 +89,27 @@ under `timeout` (120 s by default). For
    the first command, accepting abbreviated long options. Request overrides
    (`-A -p -q -t -J --after`) beat the header. The resulting account and
    partition must be **present** and allowed, and QoS allowed if set.
-4. The script goes to a private temp file and is submitted as
+4. Log paths are relative to the job's working directory: the header's
+   `--chdir` (itself relative to `root`) or else `root`. A `--chdir` that does
+   not exist is refused, since Slurm would fall back to `/tmp`. sbatch does
+   not create log directories, and a job whose log directory is missing fails
+   without a log, so gcx creates missing `--output`/`--error` directories
+   inside `root` and refuses a missing one outside it. Directories with `%x`
+   or `%u` are filled in first; ones with `%j` and the like cannot be checked.
+5. The script goes to a private temp file and is submitted as
    `sbatch --parsable -A ACCT -p PART [...] -J NAME TMP ARGS...` from `root`,
    at-most-once like `submit`. Account and partition are always on the
    command line, so a header gcx misread cannot charge an unchecked account.
    The job is named after SCRIPT, not the temp file, unless a name is set.
-5. Missing `--output`/`--error` directories are created only inside `root`.
    The result carries the job ID and log paths with `%j`, `%x`, `%u` filled in.
+
+**Dry run.** `run --dry-run` does steps 1-4 (the launcher runs, every check
+applies) but creates and submits nothing. It returns the rendered script,
+the `sbatch` command with `SCRIPT` for the temp file, the log paths (`%j`
+unfilled) and the directories a real run would create. Since nothing is
+submitted, the CLI sends it with ordinary retries rather than at-most-once,
+and it sends `dry_run` only when set, so endpoints registered before dry run
+existed still accept every other `run`.
 
 The request controls only which script runs, its `"$@"` and the overrides.
 The script content is trusted the way `submit` trusts `script_roots`.
@@ -114,8 +128,7 @@ so a template mistake or a tampered template reaches past the job itself.
 The repo script can still do anything in its body; the blocklist is defense
 in depth against headers, not a sandbox.
 
-**Not yet:** PBS (derecho, polaris); a dry-run mode that returns the rendered
-script without submitting.
+**Not yet:** PBS (derecho, polaris).
 
 ### Enforcement
 
