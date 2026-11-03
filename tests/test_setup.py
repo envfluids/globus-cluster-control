@@ -79,9 +79,40 @@ def test_keepalive_env_and_cron_line():
     assert "MODE=failover\nPRIMARY=n4\nBACKUP=n3\nEP=gcx\n" in env
     assert "STATE=/home/alice/.gcx/state\n" in env
     cmd = steps._cron_cmd(c, "backup")
-    assert "/home/alice/.gcx/keepalive.sh backup # gcx-keepalive midway3" in cmd
-    assert "grep -v 'gcx-keepalive midway3$'" in cmd  # replaces only its own line
+    assert "/home/alice/.gcx/keepalive.sh backup # gcx-keepalive midway3 gcx" in cmd
     assert "MAILTO=a@b.edu" in cmd
+
+
+def test_cron_cmd_replaces_only_this_endpoints_entry(tmp_path):
+    # Two installs on one account (here: the Midway3 pilot in ~/gc-endpoint and a
+    # fresh ~/.gcx) must each keep their own entry. Run the real shell command
+    # against a fake crontab.
+    import subprocess
+    tab = tmp_path / "tab"
+    tab.write_text(
+        "MAILTO=a@b.edu\n"
+        "*/2 * * * * /home/alice/gc-endpoint/keepalive.sh primary # gcx-keepalive midway3\n"
+        "*/2 * * * * /home/alice/.gcx/keepalive.sh primary # gcx-keepalive midway3\n"
+        "*/2 * * * * /home/alice/x/keepalive.sh single # gcx-keepalive midway3 gcx2\n"
+        "*/2 * * * * /home/alice/.gcx/keepalive.sh single # gcx-keepalive dsi gcx\n"
+        "0 3 * * * ~/backup.sh\n")
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    (fake / "crontab").write_text(f'#!/bin/sh\n[ "$1" = -l ] && exec cat {tab}\n'
+                                  f'cat > {tab}.new && mv {tab}.new {tab}\n')
+    (fake / "crontab").chmod(0o755)
+    env = {"PATH": f"{fake}:/usr/bin:/bin"}
+    c = ctx({"keepalive": {"mode": "failover", "primary": "n4", "backup": "n3"}})
+    for role in ("primary", "backup"):  # re-running replaces, never duplicates
+        subprocess.run(["sh", "-c", steps._cron_cmd(c, role)], env=env, check=True)
+    assert tab.read_text().splitlines() == [
+        "MAILTO=a@b.edu",
+        "*/2 * * * * /home/alice/gc-endpoint/keepalive.sh primary # gcx-keepalive midway3",
+        "*/2 * * * * /home/alice/x/keepalive.sh single # gcx-keepalive midway3 gcx2",
+        "*/2 * * * * /home/alice/.gcx/keepalive.sh single # gcx-keepalive dsi gcx",
+        "0 3 * * * ~/backup.sh",
+        "*/2 * * * * /home/alice/.gcx/keepalive.sh backup # gcx-keepalive midway3 gcx",
+    ]
 
 
 def test_endpoint_files_fill_workers_and_path():

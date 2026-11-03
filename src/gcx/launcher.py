@@ -98,7 +98,7 @@ def apply(cluster, cfg, pol):
     cfg["policy"] = pol
     config.save(cluster, cfg)
     print(f"[gcx] saved; applying it to {cluster} (register, allowlist, restart)\n")
-    rc = steps.run(cluster, test_job=False)
+    rc = steps.run(cluster, test_job=False, offers=False)
     if rc:
         print(f"\n[gcx] the change is saved but applying it stopped above; fix that step "
               f"and run `gcx setup {cluster}`", file=sys.stderr)
