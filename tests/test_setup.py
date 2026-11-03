@@ -280,3 +280,42 @@ def test_menu_again_prefills_current_answers(monkeypatch):
     pol = menu.build_policy("dsi", c.prof, c.facts, c.root, menu.Prompter(), current=cur)
     assert pol["capabilities"] == ["status", "read"]
     assert pol["read_roots"] == ["~", "/net/monsoon", "/net/scratch/$USER"]
+
+
+def test_running_elsewhere_per_globus_is_not_started_again(monkeypatch):
+    # Derecho, 2026-10-06: SSH landed on derecho5, the endpoint ran on derecho2,
+    # and setup started a second copy.
+    from gcx import restart
+    c = ctx({"endpoint": "ep-1", "keepalive": {"mode": "on-use"}},
+            facts={"ep_running": "no", "ep_id": "ep-1", "host": "derecho5"})
+    monkeypatch.setattr(c, "get_client", lambda: None)
+    monkeypatch.setattr(restart, "status", lambda client, ep: "online")
+    r = steps.s_running(c)
+    assert r.status == steps.OK and "another login node" in r.detail
+    monkeypatch.setattr(restart, "status", lambda client, ep: "offline")
+    r = steps.s_running(c)
+    assert r.status == steps.CHANGE and r.action is not None
+
+
+def test_doctor_reports_endpoint_errors_instead_of_crashing(monkeypatch, capsys):
+    from gcx import doctor
+
+    def boom(client, cluster):
+        yield ("functions registered for current policy", True, "ok")
+        raise RuntimeError("Another instance of this endpoint is running. (Perhaps on another login node?)")
+    monkeypatch.setattr(doctor, "checks", boom)
+    assert doctor.main(None, "derecho") == 1
+    out = capsys.readouterr().out
+    assert "FAIL  endpoint ran the check" in out and "gcx setup derecho" in out
+
+
+def test_stale_lease_without_cron_does_not_count_as_running(monkeypatch):
+    # Derecho: setup's start wrote the lease once; the endpoint then died.
+    from gcx import restart
+    c = ctx({"endpoint": "ep-1", "keepalive": {"mode": "on-use"}},
+            facts={"ep_running": "no", "ep_id": "ep-1", "owner": "derecho5", "owner_age": "196"})
+    monkeypatch.setattr(c, "get_client", lambda: None)
+    monkeypatch.setattr(restart, "status", lambda client, ep: "offline")
+    assert steps.s_running(c).status == steps.CHANGE
+    c.cfg["keepalive"] = {"mode": "single", "primary": "derecho5"}
+    assert steps.s_running(c).status == steps.OK  # with cron, a fresh lease means held

@@ -256,6 +256,13 @@ paths** (`qsub`, `qstat`, `qdel`).
 - **Limits**:
   - Restart on use needs `gcx login derecho`.
   - The cluster is being retired, with data moving to Delta.
+- **Round-robin logins, 2026-10-06:** derecho1–8 share one home, and SSH
+  logins land on different nodes, so the endpoint moves between nodes as it
+  is restarted. Setup once started a second copy on another node; that is
+  fixed, see design.md.
+- **Intra-cluster SSH works without MFA** (derecho5 → derecho2). That is
+  what a compute-node "watchdog job" would need, should one ever replace
+  restart-on-use here.
 
 ## polaris (2026-10-02)
 
