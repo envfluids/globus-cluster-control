@@ -16,7 +16,8 @@ the cluster side.
 - **The laptop watcher** (`gcx watch`, `src/gcx/watch.py`) is the human's: you
   may run `gcx watch status`, never `install`/`uninstall`.
 - **Never run `globus-compute-endpoint login`**, the laptop's first Globus login,
-  `gcx login`, `gcx launcher add`/`remove` (they re-register and restart an
+  `gcx login` (including `gcx login globus`; `gcx login globus --check` is
+  safe), `gcx launcher add`/`remove` (they re-register and restart an
   endpoint), or `gcx ssh-config --apply`. They need MFA, a browser, or edit
   the human's SSH config; ask the human. `gcx ssh-config` without `--apply`
   is a harmless preview.

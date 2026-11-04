@@ -24,6 +24,7 @@
     gcx launcher add|remove|list <cluster> ...   change `run` launchers without the menu (see --help)
     gcx ssh-config [cluster ...] [--user U] [--apply]   SSH aliases with shared connections
     gcx login [cluster ...] [--refresh]   open those connections (you answer MFA), once a day
+    gcx login globus [--check]       the Globus CLI login `gcx status` needs (--check: no prompts)
     gcx skill [--print]              write the Claude Code skill (~/.claude/skills/gcx) from your config
     gcx watch install|status|run|uninstall   laptop watcher: restart or alert on offline endpoints
 
@@ -305,10 +306,18 @@ def status(cluster):
         print(f"no 'state' path configured for {cluster} in {config.cluster_file(cluster)}",
               file=sys.stderr)
         return 1
+    from gcx import globuscli
+    if not globuscli.cli():
+        print(f"[gcx] `gcx status` needs the Globus CLI: `{globuscli.INSTALL}`, "
+              f"then `gcx login globus`", file=sys.stderr)
+        return 1
     out = subprocess.run([config.globus_cli(), "ls", "-l", "--format", "json", state],
-                         capture_output=True, text=True)
+                         capture_output=True, text=True, stdin=subprocess.DEVNULL)
     if out.returncode:
         print(out.stderr, file=sys.stderr)
+        if any(w in (out.stderr + out.stdout).lower() for w in ("consent", "login")):
+            print("[gcx] run `gcx login globus` (it logs the Globus CLI in and grants "
+                  "the collection's consent)", file=sys.stderr)
         return 1
     now = datetime.now(timezone.utc)
     files = {e["name"]: (now - datetime.fromisoformat(e["last_modified"])).total_seconds()
@@ -343,6 +352,9 @@ def _global(argv, prog):
         p.add_argument("--no-test-job", action="store_true", help="skip the end-to-end test job")
         p.add_argument("--menu", action="store_true",
                        help="re-ask the command menu (current answers as defaults), then apply")
+        p.add_argument("--take-over", action="store_true",
+                       help="set up even though another computer set up this cluster's "
+                            "endpoint (its gcx calls stop working); see docs/colleague-setup.md")
     if argv[0] == "allowlist":
         g = p.add_mutually_exclusive_group()
         g.add_argument("--apply", action="store_true", help="push the config and restart the endpoint")
@@ -361,7 +373,7 @@ def _global(argv, prog):
         try:
             return steps.run(a.target, dry_run=a.dry_run, assume_yes=a.yes,
                              test_job=False if a.no_test_job or a.dry_run else None,
-                             menu_again=a.menu)
+                             menu_again=a.menu, take_over=a.take_over)
         except (profiles.UnknownCluster, steps.RemoteError, steps.build.PolicyError) as e:
             sys.exit(f"[gcx] {e}")
     if argv[0] == "allowlist":
@@ -378,7 +390,11 @@ def _global(argv, prog):
 
 
 def login(args):
-    """Run the bundled morning-login over your configured clusters (MFA prompts)."""
+    """Run the bundled morning-login over your configured clusters (MFA prompts).
+
+    The target `globus` is the Globus CLI login that `gcx status` needs
+    (gcx.globuscli); like morning-login's, it is never part of the plain sweep.
+    """
     import os
     from importlib import resources
     script = str(resources.files("gcx.data").joinpath("morning-login"))
@@ -386,7 +402,14 @@ def login(args):
                GCX_CLUSTERS=" ".join(config.configured()),
                GCX_SINGLE_USE_MFA=" ".join(n for n in profiles.available()
                                            if profiles.load(n)["mfa_single_use"]))
-    os.execvpe("bash", ["bash", script, *args], env)
+    if "globus" not in args:
+        os.execvpe("bash", ["bash", script, *args], env)
+    from gcx import globuscli
+    rest = [a for a in args if a not in ("globus", "--check")]
+    rc = 0
+    if any(not a.startswith("-") for a in rest):  # clusters named too: SSH first
+        rc = subprocess.run(["bash", script, *rest], env=env).returncode
+    sys.exit(rc or (globuscli.check() if "--check" in args else globuscli.fix()))
 
 
 def ssh_config(args):

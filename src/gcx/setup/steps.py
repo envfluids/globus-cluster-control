@@ -49,6 +49,7 @@ class Ctx:
     facts: dict = field(default_factory=dict)
     client: object = None
     needs_restart: bool = False
+    take_over: bool = False
 
     # --- layout -----------------------------------------------------------
     @property
@@ -104,6 +105,46 @@ def s_probe(c):
                                "compute.amqps.globus.org); an endpoint cannot run here")
     return Result(OK, f"{f['host']}: {f['scheduler']}, cron {f.get('cron')}, "
                       f"Python {f.get('python3') or 'none'}, uv {'yes' if f.get('uv') else 'no'}")
+
+
+def gcx_endpoints(facts):
+    """{name: (endpoint id, allowed function ids)} for the account's gcx endpoints."""
+    out = {}
+    for item in facts.get("gcx_endpoints", "").split():
+        name, _, rest = item.partition("|")
+        ep_id, _, fns = rest.partition("|")
+        out[name] = (ep_id, set(filter(None, fns.split(","))))
+    return out
+
+
+def s_other_computers(c):
+    """Refuse to set up beside, or over, another computer's gcx endpoint.
+
+    Another computer's endpoint: this laptop has no endpoint recorded for the
+    cluster, and the account has a gcx endpoint whose allowlist names none of
+    this laptop's functions. Under the same name, setup would register new
+    functions and replace its allowlist, so that computer's calls would be
+    refused; under another name it would start a second endpoint beside it.
+    (Midway3, 2026-11-04: a second laptop started a second endpoint.) The fix
+    is to copy ~/.config/gcx from that computer; --take-over is for when that
+    computer's config is gone.
+    """
+    if c.cfg.get("endpoint"):
+        return Result(OK, f"your gcx config records endpoint {c.cfg['endpoint']}")
+    ours = {f["uuid"] for f in c.cfg.get("functions", {}).values()}
+    others = {n: ep_id for n, (ep_id, fns) in gcx_endpoints(c.facts).items() if not fns & ours}
+    if not others:
+        return Result(OK, "no gcx endpoint from another computer")
+    names = ", ".join(f"{n} ({ep_id or 'no ID'})" for n, ep_id in sorted(others.items()))
+    if c.take_over:
+        return Result(OK, f"--take-over: setting up despite {names}")
+    effect = ("replace its allowlist, so that computer's gcx calls would be refused"
+              if c.ep in others else "start a second endpoint beside it")
+    return Result(BLOCKED, f"{c.cluster} already has a gcx endpoint set up from another "
+                           f"computer: {names}. Setting up here would {effect}. Copy "
+                           f"~/.config/gcx/ from that computer instead "
+                           f"(docs/colleague-setup.md, section 6). If that computer's gcx "
+                           f"config is gone, re-run with --take-over")
 
 
 def s_venv(c):
@@ -336,10 +377,28 @@ def _heartbeats(c):
     return out
 
 
+def _ere(s):
+    """s as a literal in a grep -E pattern."""
+    return re.sub(r"([.^$*+?(){}\[\]|\\])", r"\\\1", s)
+
+
 def _cron_cmd(c, role):
-    line = f"*/2 * * * * {c.remote.abs(c.root)}/keepalive.sh {role} # gcx-keepalive {c.cluster}"
+    """Shell: replace this endpoint's cron entry with one for `role`.
+
+    The entry is tagged with the cluster and the endpoint name, so two gcx
+    installs on one account (other endpoint names, other directories) each
+    keep their own entry. Entries from before the endpoint name was in the tag
+    (`# gcx-keepalive <cluster>`) are replaced only if they run this endpoint's
+    own keepalive.sh.
+    """
+    script = f"{c.remote.abs(c.root)}/keepalive.sh"
+    tag = f"gcx-keepalive {c.cluster} {c.ep}"
+    line = f"*/2 * * * * {script} {role} # {tag}"
     mail = c.cfg.get("email", "")
-    keep = f"crontab -l 2>/dev/null | grep -v 'gcx-keepalive {c.cluster}$'"
+    ours = f" # {_ere(tag)}$"
+    ours_before = f"^\\*/2 \\* \\* \\* \\* {_ere(script)} [a-z]+ # gcx-keepalive {_ere(c.cluster)}$"
+    keep = (f"crontab -l 2>/dev/null | grep -v -E {shlex.quote(ours)} "
+            f"| grep -v -E {shlex.quote(ours_before)}")
     add_mail = (f"crontab -l 2>/dev/null | grep -q '^MAILTO=' || echo MAILTO={shlex.quote(mail)}; "
                 if mail else "")
     return f"( {keep}; {add_mail}echo {shlex.quote(line)} ) | crontab -"
@@ -418,17 +477,19 @@ def s_service(c):
 
 
 STEPS = [
-    ("ssh", s_ssh), ("probe", s_probe), ("venv", s_venv), ("tokens", s_tokens),
+    ("ssh", s_ssh), ("probe", s_probe), ("other-computers", s_other_computers),
+    ("venv", s_venv), ("tokens", s_tokens),
     ("configure", s_configure), ("endpoint-files", s_endpoint_files), ("policy", s_policy),
     ("register", s_register), ("allowlist", s_config_yaml), ("running", s_running),
     ("config", s_personal), ("keepalive", s_keepalive_mode),
     ("keepalive-files", s_keepalive_files), ("cron", s_cron), ("enforced", s_service),
 ]
 # Steps whose check needs the facts refreshed after an earlier step changed something.
-NO_REPROBE = {"ssh", "probe", "policy", "register", "config", "keepalive"}
+NO_REPROBE = {"ssh", "probe", "other-computers", "policy", "register", "config", "keepalive"}
 
 
-def run(cluster, dry_run=False, assume_yes=False, test_job=None, menu_again=False):
+def run(cluster, dry_run=False, assume_yes=False, test_job=None, menu_again=False, offers=True,
+        take_over=False):
     prof = profiles.load(cluster)
     try:
         cfg = config.load(cluster)
@@ -438,7 +499,8 @@ def run(cluster, dry_run=False, assume_yes=False, test_job=None, menu_again=Fals
         # Re-ask the command menu with the current answers as defaults; the new
         # policy is then registered and enforced by the usual steps.
         cfg["previous_policy"] = cfg.pop("policy")
-    c = Ctx(cluster, prof, cfg, Remote(cfg.get("ssh", cluster)), menu.Prompter(assume_yes))
+    c = Ctx(cluster, prof, cfg, Remote(cfg.get("ssh", cluster)), menu.Prompter(assume_yes),
+            take_over=take_over)
     print(f"gcx setup {cluster}{' (dry run)' if dry_run else ''}")
     pending = 0
     for name, step in STEPS:
@@ -484,7 +546,9 @@ def run(cluster, dry_run=False, assume_yes=False, test_job=None, menu_again=Fals
     rc = doctor.main(c.get_client(), cluster)
     if rc == 0 and test_job is not False:
         rc = run_test_job(c, ask_first=test_job is None)
-    offer_watcher(c, assume_yes)
+    if offers:
+        offer_watcher(c, assume_yes)
+        offer_globus_cli(c, assume_yes)
     return rc
 
 
@@ -508,6 +572,29 @@ def offer_watcher(c, assume_yes):
         print(f"  {'done':7s} {'watcher':16s} installed ({kind}); `gcx watch status` shows it")
     else:
         print("  skipped; `gcx watch install` adds it later")
+
+
+def offer_globus_cli(c, assume_yes):
+    """Optional: the Globus CLI login `gcx status` needs. Offered only where status
+    has something to show: a home collection, and a cron keepalive's state."""
+    if not c.prof["transfer_collection"] or c.cfg.get("keepalive", {}).get("mode") not in CRON_MODES:
+        return
+    from gcx import globuscli
+    what = f"`gcx status {c.cluster}` (which login node holds the endpoint)"
+    if not globuscli.cli():
+        print(f"\n(optional) {what} needs the Globus CLI: `{globuscli.INSTALL}`, "
+              f"then `gcx login globus`.")
+        return
+    if globuscli.ready(c.cluster):
+        print(f"  {OK:7s} {'globus-cli':16s} {what} works")
+        return
+    if assume_yes or not sys.stdin.isatty():
+        print(f"\n(optional) `gcx login globus` makes {what} work.")
+        return
+    if c.ask.confirm(f"Log the Globus CLI in for {what} now? (optional: a URL and a code)", False):
+        globuscli.fix()
+    else:
+        print("  skipped; `gcx login globus` does it later")
 
 
 def done(history, sched):

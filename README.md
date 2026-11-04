@@ -44,12 +44,17 @@ You need a laptop running macOS or Linux (WSL works),
 [uv](https://docs.astral.sh/uv/) and git. The
 [Globus CLI](https://docs.globus.org/cli/) is optional: `gcx status` uses it
 where the cluster's Globus collection exposes your home directory.
+`gcx login globus` logs it in and grants it access to those collections, and
+`gcx login globus --check` shows what is missing.
 
 ```bash
-git clone git@github.com:envfluids/globus-cluster-control.git
+git clone https://github.com/envfluids/globus-cluster-control.git
 cd globus-cluster-control
 uv tool install -e .          # puts `gcx` on PATH; `git pull` updates it
 ```
+
+On a fresh computer, install `git` and `uv` first; the
+[setup guide](docs/colleague-setup.md) shows how.
 
 ## Set up a cluster
 
@@ -73,7 +78,10 @@ It finishes with a health check and a short test job. Re-running it is safe,
 since finished steps are skipped. `--dry-run` shows what it would do, and
 `--menu` changes your choices later.
 
-The full walk-through is in [docs/colleague-setup.md](docs/colleague-setup.md).
+The full walk-through, from a fresh computer to a working Midway3, is in
+[docs/colleague-setup.md](docs/colleague-setup.md). It also covers a second
+computer, troubleshooting and removing gcx. For a cluster without a profile,
+start with [docs/new-cluster.md](docs/new-cluster.md).
 
 ## Use
 
@@ -139,7 +147,8 @@ quirks. Your own choices stay in `~/.config/gcx/` on your laptop.
 involved.
 
 Adding a cluster means adding a profile. Setup learns everything else by
-probing the cluster.
+probing the cluster; [docs/new-cluster.md](docs/new-cluster.md) lists the
+facts to gather and every profile field.
 
 ## Running scripts with arguments
 
@@ -198,7 +207,7 @@ configuration:
 | `src/gcx/capabilities/` | the code that runs on the cluster (`runtime.py`) and the step that writes a policy into it (`build.py`) |
 | `src/gcx/setup/` | `gcx setup`: probe, command menu, idempotent install steps |
 | `src/gcx/data/` | cluster profiles, endpoint templates, the keepalive script, the bundled `gcx login` script |
-| `docs/` | design, per-cluster record, setup guide |
+| `docs/` | setup guide, adding a cluster, design, per-cluster record |
 | `tests/` | unit tests (`uv run pytest`), plus a live outage test (`tests/outage_test.sh`) |
 
 ## Development

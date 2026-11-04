@@ -79,9 +79,40 @@ def test_keepalive_env_and_cron_line():
     assert "MODE=failover\nPRIMARY=n4\nBACKUP=n3\nEP=gcx\n" in env
     assert "STATE=/home/alice/.gcx/state\n" in env
     cmd = steps._cron_cmd(c, "backup")
-    assert "/home/alice/.gcx/keepalive.sh backup # gcx-keepalive midway3" in cmd
-    assert "grep -v 'gcx-keepalive midway3$'" in cmd  # replaces only its own line
+    assert "/home/alice/.gcx/keepalive.sh backup # gcx-keepalive midway3 gcx" in cmd
     assert "MAILTO=a@b.edu" in cmd
+
+
+def test_cron_cmd_replaces_only_this_endpoints_entry(tmp_path):
+    # Two installs on one account (here: the Midway3 pilot in ~/gc-endpoint and a
+    # fresh ~/.gcx) must each keep their own entry. Run the real shell command
+    # against a fake crontab.
+    import subprocess
+    tab = tmp_path / "tab"
+    tab.write_text(
+        "MAILTO=a@b.edu\n"
+        "*/2 * * * * /home/alice/gc-endpoint/keepalive.sh primary # gcx-keepalive midway3\n"
+        "*/2 * * * * /home/alice/.gcx/keepalive.sh primary # gcx-keepalive midway3\n"
+        "*/2 * * * * /home/alice/x/keepalive.sh single # gcx-keepalive midway3 gcx2\n"
+        "*/2 * * * * /home/alice/.gcx/keepalive.sh single # gcx-keepalive dsi gcx\n"
+        "0 3 * * * ~/backup.sh\n")
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    (fake / "crontab").write_text(f'#!/bin/sh\n[ "$1" = -l ] && exec cat {tab}\n'
+                                  f'cat > {tab}.new && mv {tab}.new {tab}\n')
+    (fake / "crontab").chmod(0o755)
+    env = {"PATH": f"{fake}:/usr/bin:/bin"}
+    c = ctx({"keepalive": {"mode": "failover", "primary": "n4", "backup": "n3"}})
+    for role in ("primary", "backup"):  # re-running replaces, never duplicates
+        subprocess.run(["sh", "-c", steps._cron_cmd(c, role)], env=env, check=True)
+    assert tab.read_text().splitlines() == [
+        "MAILTO=a@b.edu",
+        "*/2 * * * * /home/alice/gc-endpoint/keepalive.sh primary # gcx-keepalive midway3",
+        "*/2 * * * * /home/alice/x/keepalive.sh single # gcx-keepalive midway3 gcx2",
+        "*/2 * * * * /home/alice/.gcx/keepalive.sh single # gcx-keepalive dsi gcx",
+        "0 3 * * * ~/backup.sh",
+        "*/2 * * * * /home/alice/.gcx/keepalive.sh backup # gcx-keepalive midway3 gcx",
+    ]
 
 
 def test_endpoint_files_fill_workers_and_path():
@@ -358,3 +389,56 @@ def test_stale_lease_without_cron_does_not_count_as_running(monkeypatch):
     assert steps.s_running(c).status == steps.CHANGE
     c.cfg["keepalive"] = {"mode": "single", "primary": "derecho5"}
     assert steps.s_running(c).status == steps.OK  # with cron, a fresh lease means held
+
+
+def test_probe_lists_gcx_endpoints_under_any_name(tmp_path):
+    import subprocess
+    from importlib import resources
+    from gcx import allowlist
+    gc = tmp_path / ".globus_compute"
+    for name, ep_id, fns in [("gcx", "ep-new", ["f1", "f2"]), ("midway3-login", "ep-old", ["f3"]),
+                             ("uep.ep-old.x", "ep-old", ["f3"])]:
+        (gc / name).mkdir(parents=True)
+        (gc / name / "endpoint.json").write_text(f'{{"endpoint_id": "{ep_id}"}}')
+        (gc / name / "config.yaml").write_text(
+            allowlist.render("display_name: x\nengine:\n  type: GlobusComputeEngine\n", set(fns)))
+    (gc / "mine").mkdir()  # someone's own endpoint, not gcx's
+    (gc / "mine" / "config.yaml").write_text("display_name: mine\n")
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    for tool in ("timeout", "crontab", "sbatch", "qsub"):  # no network, no real crontab
+        (stub / tool).write_text("#!/bin/sh\nexit 1\n")
+        (stub / tool).chmod(0o755)
+    script = resources.files("gcx.setup").joinpath("probe.sh").read_text()
+    out = subprocess.run(["bash", "-s"], input='GCX_ROOT="$HOME/.gcx"\nGCX_EP=gcx\n' + script,
+                         capture_output=True, text=True, check=True,
+                         env={"HOME": str(tmp_path), "PATH": f"{stub}:/usr/bin:/bin",
+                              "USER": "alice"}).stdout
+    facts = dict(line.partition("=")[::2] for line in out.splitlines() if "=" in line)
+    assert steps.gcx_endpoints(facts) == {"gcx": ("ep-new", {"f1", "f2"}),
+                                          "midway3-login": ("ep-old", {"f3"})}
+
+
+def test_setup_refuses_another_computers_endpoint():
+    # Midway3, 2026-11-04: a second laptop, with no gcx config, set up beside the first.
+    first = "midway3-login|ep-old|f1,f2"
+    c = ctx(facts={"gcx_endpoints": first})
+    r = steps.s_other_computers(c)
+    assert r.status == steps.BLOCKED and "second endpoint beside it" in r.detail
+    assert "section 6" in r.detail and "--take-over" in r.detail
+    c = ctx(facts={"gcx_endpoints": "gcx|ep-old|f1,f2"})  # same default name
+    assert "so that computer's gcx calls would be refused" in steps.s_other_computers(c).detail
+    c.take_over = True
+    assert steps.s_other_computers(c).status == steps.OK
+
+
+def test_setup_proceeds_on_its_own_endpoint():
+    assert steps.s_other_computers(ctx()).status == steps.OK  # nothing there yet
+    assert steps.s_other_computers(ctx(facts={"gcx_endpoints": ""})).status == steps.OK
+    # The computer that set it up, or one given a copy of its config.
+    c = ctx({"endpoint": "ep-old"}, facts={"gcx_endpoints": "midway3-login|ep-old|f1"})
+    assert steps.s_other_computers(c).status == steps.OK
+    # A first setup interrupted after the allowlist was written, before the ID was recorded.
+    c = ctx({"functions": {"gcx_ping": {"uuid": "f1", "sha256": "h"}}},
+            facts={"gcx_endpoints": "gcx||f1,f2"})
+    assert steps.s_other_computers(c).status == steps.OK

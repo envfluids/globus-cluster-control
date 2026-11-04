@@ -29,7 +29,7 @@ def test_add_defaults_to_cat_and_applies_with_setup(cfg):
     assert launcher.main(["add", "midway3", "~/other/"]) == 0
     assert launchers()[-1] == {"root": "~/other", "argv": ["cat"], "timeout": 120,
                                "block_risky": True}
-    assert cfg == [("midway3", {"test_job": False})]
+    assert cfg == [("midway3", {"test_job": False, "offers": False})]
 
 
 def test_command_after_double_dash_is_kept_verbatim(cfg):

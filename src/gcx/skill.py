@@ -105,8 +105,10 @@ Source and docs: {REPO}
   `gcx launcher add`/`remove`, `gcx ssh-config --apply`,
   `gcx watch install`/`uninstall`, or any Globus login. They need MFA or a
   browser, re-register and restart an endpoint, or change the human's own
-  setup. `gcx launcher list <cluster>` and `gcx launcher add ... --dry-run`
-  only check and print.
+  setup. `gcx launcher list <cluster>`, `gcx launcher add ... --dry-run` and
+  `gcx login globus --check` only check and print.
+- **`gcx status <cluster>`** needs the Globus CLI logged in for that
+  cluster's collection. If it says to run `gcx login globus`, ask the human.
   `gcx watch status` shows the laptop watcher's last check per cluster.
   `gcx doctor` (all clusters, one line each) and `gcx doctor <cluster>` are
   safe health checks.

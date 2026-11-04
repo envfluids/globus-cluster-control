@@ -275,9 +275,9 @@ run concurrently.
 steps. Each one checks the current state, mostly from one probe round trip
 (`probe.sh`), and either reports OK or applies a change and re-checks:
 
-ssh → probe → venv → tokens → configure → endpoint-files → policy →
-register → allowlist → running → config → keepalive → keepalive-files →
-cron → enforced
+ssh → probe → other-computers → venv → tokens → configure → endpoint-files →
+policy → register → allowlist → running → config → keepalive →
+keepalive-files → cron → enforced
 
 then `doctor` and a test job.
 
@@ -291,6 +291,14 @@ Rules:
 - **Cron is proven by heartbeats, not by reading crontabs.** Login nodes can't
   reach each other, so a crontab on another node can't be read. A node whose
   heartbeat is fresh has working cron.
+- **One computer sets up each cluster.** If the laptop's config records no
+  endpoint for the cluster, but the account already has a gcx endpoint
+  (one whose `config.yaml` carries gcx's allowlist) allowing none of this
+  laptop's functions, setup stops before changing anything. With the same
+  endpoint name it would replace the other computer's allowlist; with
+  another name, it would start a second endpoint. `--take-over` overrides
+  this, for when the other computer's config is lost. (Midway3,
+  2026-11-04: a second laptop started a second endpoint.)
 - **Keepalive mode is probe, then degrade**: `failover` when the profile has
   named login nodes and cron works, `single` with cron only, `none` without
   cron.
