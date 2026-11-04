@@ -65,6 +65,18 @@ kv ep_configured "$([ -d "$epdir" ] && echo yes || echo no)"
 kv ep_id "$(sed -n 's/.*"endpoint_id": *"\([^"]*\)".*/\1/p' "$epdir/endpoint.json" 2>/dev/null)"
 kv ep_running "$(pgrep -u "$USER" -f "^Globus Compute Endpoint .*, $GCX_EP\)" >/dev/null && echo yes || echo no)"
 kv keepalive "$([ -x "$GCX_ROOT/keepalive.sh" ] && echo yes || echo no)"
+# Every endpoint on this account that carries gcx's allowlist, under any name or
+# install root, as name|id|function,ids (so setup can tell another computer's).
+eps=""
+for d in "$HOME"/.globus_compute/*/; do
+  n=$(basename "$d")
+  case "$n" in uep.*) continue ;; esac   # per-session user endpoints, not managers
+  grep -q '^# gcx: only these registered functions' "$d/config.yaml" 2>/dev/null || continue
+  id=$(sed -n 's/.*"endpoint_id": *"\([^"]*\)".*/\1/p' "$d/endpoint.json" 2>/dev/null)
+  fns=$(awk '/^allowed_functions:/{f=1;next} f&&/^ *- /{print $2;next} {f=0}' "$d/config.yaml" | paste -sd, -)
+  eps="$eps${eps:+ }$n|$id|$fns"
+done
+kv gcx_endpoints "$eps"
 
 # Keepalive state in the shared home: who holds the endpoint, and each node's
 # heartbeat age -- a fresh heartbeat proves that node's cron entry works.

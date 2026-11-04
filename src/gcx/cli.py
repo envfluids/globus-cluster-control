@@ -352,6 +352,9 @@ def _global(argv, prog):
         p.add_argument("--no-test-job", action="store_true", help="skip the end-to-end test job")
         p.add_argument("--menu", action="store_true",
                        help="re-ask the command menu (current answers as defaults), then apply")
+        p.add_argument("--take-over", action="store_true",
+                       help="set up even though another computer set up this cluster's "
+                            "endpoint (its gcx calls stop working); see docs/colleague-setup.md")
     if argv[0] == "allowlist":
         g = p.add_mutually_exclusive_group()
         g.add_argument("--apply", action="store_true", help="push the config and restart the endpoint")
@@ -370,7 +373,7 @@ def _global(argv, prog):
         try:
             return steps.run(a.target, dry_run=a.dry_run, assume_yes=a.yes,
                              test_job=False if a.no_test_job or a.dry_run else None,
-                             menu_again=a.menu)
+                             menu_again=a.menu, take_over=a.take_over)
         except (profiles.UnknownCluster, steps.RemoteError, steps.build.PolicyError) as e:
             sys.exit(f"[gcx] {e}")
     if argv[0] == "allowlist":

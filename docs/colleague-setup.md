@@ -175,10 +175,11 @@ then.
 
 ## 6. A second computer
 
-Do **not** run `gcx setup` for the same cluster from a second computer. It
-would find the same endpoint (same directory and name) and register a new
-set of functions for it, replacing its allowlist, so the first computer's
-calls would be refused. Instead:
+Do **not** run `gcx setup` for the same cluster from a second computer. On
+the same endpoint, it would register a new set of functions and replace the
+allowlist, so the first computer's calls would be refused. Under another
+endpoint name or directory, it would start a second endpoint beside the
+first. Setup now stops at its `other-computers` step and says so. Instead:
 
 1. Do sections 1–3 on the new computer.
 2. Copy `~/.config/gcx/` from the first computer.
@@ -189,6 +190,11 @@ calls would be refused. Instead:
    logins and consents belong to each computer.
 
 Keep the watcher on one computer only.
+
+If the first computer's `~/.config/gcx/` is gone (a lost or wiped laptop),
+run `gcx setup midway3 --take-over` on the new one. It sets up as if it were
+the first computer. If the old endpoint had a different name or directory
+from the one setup uses, it is left running; remove it as in section 10.
 
 ## 7. Use it
 
@@ -257,6 +263,7 @@ Run `gcx skill` to rewrite them by hand.
 | Duo push timed out | Re-run the command; finished steps are skipped. |
 | Setup: "blocked at `ssh`" | `gcx login <c>` (or `gcx ssh-config <c> --apply` if the alias is new). |
 | Setup: "blocked at `probe`" | The login node cannot reach Globus Compute; the line says which. Ask the site. |
+| Setup: "blocked at `other-computers`" | Another computer set up this cluster: copy its `~/.config/gcx/` (section 6). |
 | Doctor: "functions registered for current policy" FAIL | gcx itself was updated: run `gcx setup <c>`. |
 | Exit 69 | `gcx login <c>`; the next call restarts the endpoint. |
 | "gcx refused" | Read the reason: a path, account or queue you did not allow. `gcx setup <c> --menu`. |
@@ -266,22 +273,36 @@ Run `gcx skill` to rewrite them by hand.
 
 ## 10. Removing gcx
 
-**One cluster.** On the cluster, with your endpoint name and directory from
-`~/.config/gcx/clusters/<cluster>.json` (`endpoint_name`, default `gcx`;
-`remote_root`, default `~/.gcx`):
+**One cluster.** The commands below use the default endpoint name `gcx` and
+directory `~/.gcx`. Yours are `endpoint_name` and `remote_root` in
+`~/.config/gcx/clusters/<cluster>.json`.
+
+Remove the cron entries first. Otherwise the keepalive restarts the
+endpoint within 2 minutes of you stopping it. Cron entries are per login
+node; with failover there are two, on `keepalive.primary` and
+`keepalive.backup` in that file. Start with the backup, so that it cannot
+take over while the primary's entry is still there:
 
 ```bash
-ssh midway3
-~/.gcx/venv/bin/globus-compute-endpoint stop gcx
-~/.gcx/venv/bin/globus-compute-endpoint delete gcx --yes   # unregisters it with Globus too
-crontab -l | grep -v 'gcx-keepalive midway3 gcx$' | crontab -
-rm -rf ~/.gcx
+ssh midway3-login1          # the backup node: a login of its own (MFA)
+crontab -l | grep -v '/\.gcx/keepalive\.sh ' | crontab -
+crontab -l                  # no line runs .gcx/keepalive.sh any more
+exit
 ```
 
-The cron entry is the line ending in `# gcx-keepalive <cluster> <endpoint>`
-(before November 2026, just `# gcx-keepalive <cluster>`). With failover,
-cron entries are per login node: also run the `crontab` line on the backup
-node (`ssh midway3-login1`, with the node setup named). Then, on the laptop:
+The `grep` matches gcx's line by the script it runs, which works for entries
+written by any gcx version and leaves every other line alone. Repeat it on
+the primary node. Then, on the node that holds the endpoint
+(`cat ~/.gcx/state/owner` names it):
+
+```bash
+~/.gcx/venv/bin/globus-compute-endpoint stop gcx
+~/.gcx/venv/bin/globus-compute-endpoint delete gcx --yes   # unregisters it with Globus too
+rm -rf ~/.gcx ~/.globus_compute/uep.<endpoint-id>.*
+```
+
+The `uep.` directories are the endpoint's per-session workers, named after
+its ID (`endpoint` in your config). Then, on the laptop:
 
 ```bash
 rm ~/.config/gcx/clusters/midway3.json

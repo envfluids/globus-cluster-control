@@ -389,3 +389,56 @@ def test_stale_lease_without_cron_does_not_count_as_running(monkeypatch):
     assert steps.s_running(c).status == steps.CHANGE
     c.cfg["keepalive"] = {"mode": "single", "primary": "derecho5"}
     assert steps.s_running(c).status == steps.OK  # with cron, a fresh lease means held
+
+
+def test_probe_lists_gcx_endpoints_under_any_name(tmp_path):
+    import subprocess
+    from importlib import resources
+    from gcx import allowlist
+    gc = tmp_path / ".globus_compute"
+    for name, ep_id, fns in [("gcx", "ep-new", ["f1", "f2"]), ("midway3-login", "ep-old", ["f3"]),
+                             ("uep.ep-old.x", "ep-old", ["f3"])]:
+        (gc / name).mkdir(parents=True)
+        (gc / name / "endpoint.json").write_text(f'{{"endpoint_id": "{ep_id}"}}')
+        (gc / name / "config.yaml").write_text(
+            allowlist.render("display_name: x\nengine:\n  type: GlobusComputeEngine\n", set(fns)))
+    (gc / "mine").mkdir()  # someone's own endpoint, not gcx's
+    (gc / "mine" / "config.yaml").write_text("display_name: mine\n")
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    for tool in ("timeout", "crontab", "sbatch", "qsub"):  # no network, no real crontab
+        (stub / tool).write_text("#!/bin/sh\nexit 1\n")
+        (stub / tool).chmod(0o755)
+    script = resources.files("gcx.setup").joinpath("probe.sh").read_text()
+    out = subprocess.run(["bash", "-s"], input='GCX_ROOT="$HOME/.gcx"\nGCX_EP=gcx\n' + script,
+                         capture_output=True, text=True, check=True,
+                         env={"HOME": str(tmp_path), "PATH": f"{stub}:/usr/bin:/bin",
+                              "USER": "alice"}).stdout
+    facts = dict(line.partition("=")[::2] for line in out.splitlines() if "=" in line)
+    assert steps.gcx_endpoints(facts) == {"gcx": ("ep-new", {"f1", "f2"}),
+                                          "midway3-login": ("ep-old", {"f3"})}
+
+
+def test_setup_refuses_another_computers_endpoint():
+    # Midway3, 2026-11-04: a second laptop, with no gcx config, set up beside the first.
+    first = "midway3-login|ep-old|f1,f2"
+    c = ctx(facts={"gcx_endpoints": first})
+    r = steps.s_other_computers(c)
+    assert r.status == steps.BLOCKED and "second endpoint beside it" in r.detail
+    assert "section 6" in r.detail and "--take-over" in r.detail
+    c = ctx(facts={"gcx_endpoints": "gcx|ep-old|f1,f2"})  # same default name
+    assert "so that computer's gcx calls would be refused" in steps.s_other_computers(c).detail
+    c.take_over = True
+    assert steps.s_other_computers(c).status == steps.OK
+
+
+def test_setup_proceeds_on_its_own_endpoint():
+    assert steps.s_other_computers(ctx()).status == steps.OK  # nothing there yet
+    assert steps.s_other_computers(ctx(facts={"gcx_endpoints": ""})).status == steps.OK
+    # The computer that set it up, or one given a copy of its config.
+    c = ctx({"endpoint": "ep-old"}, facts={"gcx_endpoints": "midway3-login|ep-old|f1"})
+    assert steps.s_other_computers(c).status == steps.OK
+    # A first setup interrupted after the allowlist was written, before the ID was recorded.
+    c = ctx({"functions": {"gcx_ping": {"uuid": "f1", "sha256": "h"}}},
+            facts={"gcx_endpoints": "gcx||f1,f2"})
+    assert steps.s_other_computers(c).status == steps.OK
